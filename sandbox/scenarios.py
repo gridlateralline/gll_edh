@@ -31,20 +31,25 @@ So: four household types, placed by electrical distance from the transformer.
 
 Sizing target
 -------------
-The population must **stress the feeder under the naive baseline**, and a
-better controller must be able to do something about it. Both are calibration
-targets to verify, not assumptions -- see the acceptance test in
-``tests/test_scenarios.py``.
+Naive control must **stress the network**, and a better controller must be
+able to do something about it. Both are calibration targets to verify, not
+assumptions -- see ``tests/test_scenarios.py``.
 
-Two ways to get this wrong, and the second is less obvious:
+"Stress" here does not mean over-voltage. On the default urban feeder voltage
+never leaves the band, and that is correct rather than a failure to size: a
+meshed city network is stiff, and ewz's own operational experience is that
+over-voltage is not what constrains it. What binds is reverse flow through a
+transformer specified for one direction, the loss of diversity that network
+planning depends on, and the ramp. See :mod:`sandbox.metrics`.
 
-* Size too small and nothing ever violates. Every tariff then scores
-  identically and the challenge has no signal.
-* Size PV too *large* and the batteries saturate before noon. Control then has
-  no authority: the naive and the do-nothing baselines converge, because the
-  peak is simply "all the generation minus the load" whatever anyone does.
-  This is a real property of a fully-solarized quarter, and it is exactly why
-  the reference PV is 6-10 kWp rather than the 8-14 kWp a big roof would take.
+Two ways to mis-size, and the second is less obvious:
+
+* Too small, and nothing moves. Every tariff scores identically.
+* PV too *large*, and the batteries saturate before noon. Control then has no
+  authority at all: the naive and do-nothing baselines converge, because the
+  peak becomes "generation minus load" whatever anyone does. This is a real
+  property of a fully-solarized quarter, and it is why the reference PV is
+  6-10 kWp rather than the 8-14 kWp a large roof would carry.
 """
 
 from dataclasses import dataclass
@@ -71,28 +76,33 @@ GRID_MODEL = "cigre_lv_consumer"
 #: phenomenon. It bites on suburban and rural feeders: longer runs, thinner
 #: conductor, detached houses with large roofs and low coincident load.
 #:
-#: Calibration, with the numbers, since this is the constant that decides
-#: whether the challenge has any signal at all:
+#: Named feeder strengths, as a multiplier on the LV branch impedance.
 #:
-#: ===== ========= ============ ==========
-#: scale end-of-line  naive >1.05  authority
-#: ===== ========= ============ ==========
-#: 1.0   0.135 ohm   0.00 %       none
-#: 3.5   0.459 ohm   0.13 %       marginal
-#: 7.0   0.912 ohm   0.73 %       13 % peak
-#: ===== ========= ============ ==========
+#: ``urban`` is the bundled CIGRE asset untouched -- a short, generously
+#: dimensioned, meshed city feeder with an end-of-line Thevenin impedance of
+#: 0.135 ohm. It is ewz's own situation, and on it **over-voltage never
+#: happens**: voltage stays inside 1.02 pu whatever anyone does, because
+#: meshing buys voltage stiffness. What it does not buy is thermal capacity,
+#: and the reverse-flow peak here runs at three times the forward peak for
+#: some 44 % of the week. That is the real constraint, and it is the default.
 #:
-#: 3.5 lands exactly on IEC 60725's reference LV network impedance
-#: (0.4 + j0.25 ohm), the standard benchmark for a weak connection point --
-#: but at that strength the naive population barely violates and a controller
-#: has almost nothing to work with.
+#: ``suburban`` scales to 0.46 ohm, the magnitude of IEC 60725's reference LV
+#: network impedance (0.4 + j0.25 ohm). ``rural`` reaches 0.91 ohm, roughly
+#: twice it -- a long feeder where a single 5 kW injection moves local voltage
+#: by around 3 %, and where over-voltage becomes a binding constraint rather
+#: than a curiosity.
 #:
-#: 7.0 gives about 0.91 ohm, roughly twice the IEC reference: a long rural or
-#: outer-suburban feeder, where a single 5 kW injection moves the local
-#: voltage by around 3 %. That is a real and common feeder, and it is where
-#: distributed PV actually causes trouble. Lower it to 3.5 for a conservative
-#: run; the challenge simply gets harder to score.
-FEEDER_IMPEDANCE_SCALE = 7.0
+#: Same population, same jury, different binding constraint. Which one binds
+#: where is itself worth a submission.
+FEEDER_STRENGTHS: dict[str, float] = {
+    "urban": 1.0,
+    "suburban": 3.5,
+    "rural": 7.0,
+}
+
+#: ewz's actual network is the honest default. Over-voltage is a research
+#: question on this feeder, not the challenge.
+FEEDER_IMPEDANCE_SCALE = FEEDER_STRENGTHS["urban"]
 
 
 @dataclass(frozen=True)

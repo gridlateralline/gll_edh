@@ -90,6 +90,15 @@ class Trajectory:
             absorbing reactive power and, past that, by curtailing.
         q_meter_kvarh: (T, num_pq) Reactive energy at each connection point.
             Mostly the grid code's doing, and a real cost to the network.
+        transformer_kw: (T,) Active power through the substation transformer,
+            positive when the feeder draws from the grid and negative when it
+            exports. The quantity that decides whether a transformer must be
+            replaced -- and the one constraint a meshed urban network cannot
+            mesh its way out of, since meshing buys voltage stiffness and no
+            thermal capacity at all.
+        transformer_kvar: (T,) Reactive power through it.
+        losses_kw: (T,) Network losses. Quadratic in flow, so synchronised
+            behaviour costs more than its average suggests.
         voltage_pu: (T, num_bus) Voltage magnitude everywhere.
         day_step: (T,) Interval within the day, for time-of-day breakdowns.
         valid: (T,) Whether the power flow converged.
@@ -103,6 +112,9 @@ class Trajectory:
     pv_available_kw: chex.Array
     pv_realized_kw: chex.Array
     q_meter_kvarh: chex.Array
+    transformer_kw: chex.Array
+    transformer_kvar: chex.Array
+    losses_kw: chex.Array
     voltage_pu: chex.Array
     day_step: chex.Array
     valid: chex.Array
@@ -184,6 +196,20 @@ def _record(
         "pv_available_kw": pv_available_kw,
         "pv_realized_kw": jnp.asarray(solar.sol_realized) / step_h,
         "q_meter_kvarh": jnp.imag(prosumer_state.s_pq_realized_kvah),
+        # The slack IS the medium-voltage side of the transformer, so its
+        # injection is the whole feeder's throughput. Load convention:
+        # positive means the feeder is DRAWING from the grid, negative means
+        # it is exporting into it.
+        "transformer_kw": model.grid.pu_to_kw(
+            jnp.real(state.grid_state.bus_power_injection_pu)[model.grid.slack_id[0]]
+        ),
+        "transformer_kvar": model.grid.pu_to_kw(
+            jnp.imag(state.grid_state.bus_power_injection_pu)[model.grid.slack_id[0]]
+        ),
+        # Sum every bus injection and what is left is what the network ate.
+        "losses_kw": model.grid.pu_to_kw(
+            jnp.sum(jnp.real(state.grid_state.bus_power_injection_pu))
+        ),
         "reward_chf": timestep.reward,
         "settlement_chf": timestep.extras["reward"].settlement_chf,
         "voltage_pu": jnp.abs(state.grid_state.bus_voltage_pu),

@@ -35,8 +35,10 @@ from sandbox.controller import (
     passive_controller,
     update_memory,
 )
+from sandbox.metrics import coincidence_factor, max_ramp_kw, score
 from sandbox.rollout import build_env, rollout
 from sandbox.scenarios import (
+    FEEDER_STRENGTHS,
     REFERENCE_POPULATION,
     end_of_line_impedance_ohm,
     reference_scenario,
@@ -64,14 +66,16 @@ def _peak_kw(trajectory) -> float:
     return float((jnp.abs(trajectory.meter_kwh.sum(-1)) / 0.25).max())
 
 
-def test_the_feeder_is_realistically_weak() -> None:
-    """Around twice IEC 60725's reference LV impedance of 0.4 + j0.25 ohm.
+def test_the_default_feeder_is_the_real_urban_one() -> None:
+    """ewz's own network, unmodified. Stiff, meshed, and not voltage-limited.
 
-    A long rural or outer-suburban feeder -- the kind where distributed PV
-    actually causes trouble, rather than the short urban one the CIGRE asset
-    ships as.
+    The variants exist so a submission can ask which constraint binds where;
+    IEC 60725's reference LV impedance (0.4 + j0.25 ohm, magnitude 0.47) is
+    the suburban anchor.
     """
-    assert 0.8 < end_of_line_impedance_ohm() < 1.05
+    assert end_of_line_impedance_ohm() < 0.2
+    assert 0.4 < end_of_line_impedance_ohm(FEEDER_STRENGTHS["suburban"]) < 0.55
+    assert end_of_line_impedance_ohm(FEEDER_STRENGTHS["rural"]) > 0.8
 
 
 def test_the_population_is_mixed_and_six_households_cannot_respond(population) -> None:
@@ -105,19 +109,45 @@ def test_the_flexible_households_sit_at_the_far_end(population) -> None:
     assert min(ranks) > max(near)
 
 
-def test_naive_control_stresses_the_feeder(env, population) -> None:
-    """THE acceptance test. If greedy self-consumption keeps this feeder inside
-    its limits, every tariff scores identically and there is no challenge.
+def test_the_urban_feeder_is_stressed_by_reverse_flow_not_voltage(env, population) -> None:
+    """THE acceptance test, and it is not about voltage.
 
-    Verify by running it, never by assuming it: the last time this scenario
-    was sized by argument alone it produced a peak voltage of 1.018 and zero
-    violations.
+    On a meshed urban feeder voltage never leaves the band -- meshing buys
+    stiffness. It buys no thermal capacity, and what this population does is
+    run the transformer backwards at three times its forward peak for most of
+    the daylight half of the week. Urban transformers, their protection and
+    their thermal models were largely specified for one direction.
     """
     trajectory = rollout(base_controller(), population, jax.random.PRNGKey(0), WEEK, env=env)
+    result = score(trajectory, population)
 
     assert bool(jnp.all(trajectory.valid)), "power flow must converge everywhere"
-    assert float(trajectory.voltage_pu.max()) > OVER_VOLTAGE_PU
-    assert _over_voltage_fraction(trajectory) > 0.005
+    assert result.over_voltage_share == 0.0, "urban feeder should not be voltage limited"
+    assert result.reverse_flow_share > 0.30
+    assert result.transformer_export_peak_kw > 3.0 * result.transformer_draw_peak_kw
+
+
+def test_the_naive_controller_makes_the_ramp_dramatically_worse(env, population) -> None:
+    """The finding this whole challenge exists to surface.
+
+    Greedy self-consumption is what every home battery ships with, and by
+    every measure a household cares about it is an improvement: lower peak,
+    lower losses, far more self-consumption, a better bill. And it makes the
+    steepest swing at the transformer roughly seventy percent worse, because
+    every battery fills at the same moment and therefore stops absorbing at
+    the same moment.
+
+    Better for each household, worse for the system they share. If this ever
+    stops holding, the demo at the top of the challenge has gone with it.
+    """
+    naive = rollout(base_controller(), population, jax.random.PRNGKey(0), WEEK, env=env)
+    nothing = rollout(passive_controller(), population, jax.random.PRNGKey(0), WEEK, env=env)
+
+    assert max_ramp_kw(naive) > 1.5 * max_ramp_kw(nothing)
+    # ...while being better on everything a household would look at.
+    assert score(naive, population).community_settlement_chf > score(
+        nothing, population
+    ).community_settlement_chf
 
 
 def test_control_has_authority_over_the_outcome(env, population) -> None:
@@ -130,16 +160,46 @@ def test_control_has_authority_over_the_outcome(env, population) -> None:
     naive = rollout(base_controller(), population, jax.random.PRNGKey(0), WEEK, env=env)
     nothing = rollout(passive_controller(), population, jax.random.PRNGKey(0), WEEK, env=env)
 
-    assert _over_voltage_fraction(naive) < _over_voltage_fraction(nothing)
     assert _peak_kw(naive) < _peak_kw(nothing) * 0.98
+    assert coincidence_factor(naive) < coincidence_factor(nothing)
+
+
+def test_diversity_is_measured_independently_of_the_wiring(population) -> None:
+    """The coincidence factor is behavioural, so it must not move when only
+    the feeder impedance does. That is what makes it a clean read on the
+    mechanism rather than on the network it happens to run over."""
+    key = jax.random.PRNGKey(0)
+    factors = [
+        coincidence_factor(
+            rollout(
+                base_controller(),
+                population,
+                key,
+                288,
+                env=build_env(population, time_limit=288, impedance_scale=scale),
+            )
+        )
+        for scale in FEEDER_STRENGTHS.values()
+    ]
+    assert max(factors) - min(factors) < 0.01
+
+
+def test_over_voltage_appears_on_the_rural_variant(population) -> None:
+    """The variant that exists so over-voltage can be studied at all. On a long
+    feeder the same population does breach the planning trigger."""
+    env = build_env(population, time_limit=WEEK, impedance_scale=FEEDER_STRENGTHS["rural"])
+    trajectory = rollout(base_controller(), population, jax.random.PRNGKey(0), WEEK, env=env)
+
+    assert float(trajectory.voltage_pu.max()) > OVER_VOLTAGE_PU
+    assert _over_voltage_fraction(trajectory) > 0.005
 
 
 def test_violations_can_be_removed_but_not_for_free(env, population) -> None:
     """There has to be a frontier, or the challenge is a one-liner.
 
-    A blunt export cap eliminates over-voltage entirely -- and throws away a
-    tenth of the generation to do it. Somewhere between "ignore the grid" and
-    "throw energy away" is the design space this hackathon is about.
+    A blunt export cap flattens the feeder -- and throws away a chunk of the
+    generation to do it. Somewhere between "ignore the grid" and "throw energy
+    away" is the design space this hackathon is about.
     """
 
     def export_capped(obs, carry, params, key):
@@ -159,14 +219,11 @@ def test_violations_can_be_removed_but_not_for_free(env, population) -> None:
     naive = rollout(base_controller(), population, jax.random.PRNGKey(0), WEEK, env=env)
     capped = rollout(blunt, population, jax.random.PRNGKey(0), WEEK, env=env)
 
-    assert _over_voltage_fraction(capped) < _over_voltage_fraction(naive) * 0.2
-
-    def curtailed(trajectory) -> float:
-        lost = jnp.maximum(trajectory.pv_available_kw - trajectory.pv_realized_kw, 0.0).sum()
-        return float(lost / trajectory.pv_available_kw.sum())
-
-    assert curtailed(naive) < 0.01
-    assert curtailed(capped) > 0.05
+    assert score(capped, population).transformer_export_peak_kw < 0.7 * score(
+        naive, population
+    ).transformer_export_peak_kw
+    assert score(naive, population).curtailed_share < 0.01
+    assert score(capped, population).curtailed_share > 0.05
 
 
 def test_tenants_are_settled_even_though_they_have_no_agent(env, population) -> None:

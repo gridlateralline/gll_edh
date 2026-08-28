@@ -47,12 +47,27 @@ settlement lags by days or months, past the end of an episode, so no household
 can react to a price in time. Anticipation lives in the *parameters*, tuned
 across episodes.
 
-That is not a limitation, it is the interesting part. **Voltage is the price
-proxy**: a nodal price is high exactly when the local feeder is congested, and
-congestion is measurable at your own terminal. But every such signal is
-correlated across the feeder — one cloud shades the whole neighbourhood — so
-the mechanism that lets you anticipate is the same one that makes everybody
-move together. Designing around that is the challenge.
+### And the local signal is thinner than it looks
+
+Own bus voltage correlates with feeder congestion at **+0.99**, so it looks
+like the obvious proxy for a nodal price. Then measure how much of it a
+household did not already know: regress it on own PV, own load and the clock
+and **82% is already explained**. The residual — the part genuinely about the
+neighbourhood — is **0.13% of nominal** on the default urban feeder, roughly
+four times *below* what a Class 1 smart meter can resolve. It reaches 0.41% on
+`suburban` and 0.68% on `rural`.
+
+That is the real finding here, and it explains *why* herding is hard rather
+than just that it happens. Every local signal is correlated across the feeder,
+and the one that is genuinely about the neighbourhood carries almost nothing
+new. There is nearly **no idiosyncratic local information** — households move
+together because the information structure leaves them nothing to
+differentiate on.
+
+So the design space is not "read the signal better". It is to **manufacture
+differentiation where the physics provides none**: memory and hysteresis in the
+carry, deliberate desynchronisation via `key`, or a tariff that creates
+locational distinctions the voltages do not.
 
 **The controller never sees a neighbour, either.** It is written for one
 household and `vmap`'d over the population, so there is no agent axis inside it

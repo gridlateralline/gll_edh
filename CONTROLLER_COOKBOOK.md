@@ -19,7 +19,7 @@ so you cannot look at a neighbour even by accident.
 | field | unit | meaning |
 |---|---|---|
 | `time_sin`, `time_cos` | — | clock, continuous across midnight |
-| `voltage_pu` | pu | your own bus. **The congestion signal.** |
+| `voltage_pu` | pu | your own bus. Correlates +0.99 with congestion — but see below |
 | `meter_kw` | kW | your net flow last interval, + = injecting |
 | `load_kw` | kW | your consumption last interval |
 | `load_forecast_kw` | kW | your expected consumption, coming interval |
@@ -30,6 +30,14 @@ so you cannot look at a neighbour even by accident.
 
 **No price.** Real settlement lags past the end of an episode. Tune your
 parameters across episodes instead — that is what "anticipate it" means.
+
+**And do not over-trust voltage.** It tracks congestion almost perfectly, but
+82% of it is already implied by your own PV, your own load and the clock. The
+part that is genuinely about your neighbourhood is 0.13% of nominal on the
+urban feeder — below what a real smart meter resolves. On `rural` it is 0.68%
+and worth using. Check which feeder you are on before building a rule around
+it; a voltage threshold on the urban feeder is an expensive way to read a
+clock.
 
 `p_min_kw` / `p_max_kw` already fold in your inverter rating, your grid
 connection, your battery's state and the reactive power Q(U) committed on your

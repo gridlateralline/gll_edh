@@ -21,17 +21,49 @@ episode -- so no controller can expect to see one in time. Anticipation lives
 in the *parameters*, tuned across episodes; within an episode a household acts
 on what its own meter and inverter can read.
 
-**Voltage is the price proxy.** A nodal price is high exactly when the local
-feeder is congested, and congestion is directly measurable at the household's
-own terminal. That is the whole intellectual content of the household pathway:
-hand teams a price and they write a threshold rule, never discovering that
-their own bus voltage told them the same thing, earlier and for free.
+Voltage looks like the price proxy, and is nearly useless as one
+--------------------------------------------------------------
+A nodal price is high exactly when the local feeder is congested, and
+congestion is measurable at the household's own terminal: own bus voltage
+correlates with feeder export at **+0.99** on every feeder here. So far so
+good.
 
-And every one of these signals is *correlated across the feeder* -- one cloud
-shades the whole neighbourhood, everyone cooks at seven. So the same
-information that lets a household anticipate makes every household infer the
-same thing at the same moment. The anticipation mechanism and the herding
-mechanism are the same mechanism. That is the challenge.
+But measure how much of that a household did not already know. Regress own
+voltage on own PV, own load and the clock, and **82 % of it is already
+explained**. What is left -- the part that genuinely describes the
+neighbourhood rather than this roof -- is:
+
+======== ============= ==================================
+feeder   voltage span  residual after own PV, load, clock
+======== ============= ==================================
+urban     1.59 %        **0.13 %** of nominal
+suburban  5.16 %        0.41 %
+rural     9.42 %        0.68 %
+======== ============= ==================================
+
+A Class 1 meter resolves roughly 0.5 % of nominal. So on the default urban
+feeder the neighbourhood-only content of the voltage signal sits about four
+times *below* what a real meter could see; the same holds for the spread
+between buses at a single instant, 0.18 % on average. A controller reading
+voltage there is reading a noisy restatement of "it is noon and my roof is
+working". It becomes marginal on the suburban feeder and real on the rural
+one.
+
+Which is the deepest thing this sandbox has to say
+--------------------------------------------------
+It explains *why* herding is hard rather than merely that it happens. Every
+signal above is correlated across the feeder -- one cloud shades the whole
+neighbourhood, everyone cooks at seven -- and the one signal that is
+genuinely about the neighbourhood carries almost no information a household
+did not already have. There is nearly **no idiosyncratic local information**.
+Households move together not by accident but because the information
+structure leaves them nothing to differentiate on.
+
+So the design space is not "read the local signal better". It is to
+**manufacture differentiation where the physics provides none**: through the
+carry (memory, hysteresis, staggering), through `key` (deliberate
+desynchronisation), or -- from the other seam -- through a tariff that creates
+locational distinctions the voltages do not.
 
 Units
 -----

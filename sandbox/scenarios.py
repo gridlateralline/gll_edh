@@ -31,11 +31,20 @@ So: four household types, placed by electrical distance from the transformer.
 
 Sizing target
 -------------
-The population must **stress the feeder under the naive baseline**. That is a
-calibration target to verify, not an assumption -- see
-:func:`sandbox.metrics.stress_report` and the acceptance test in
-``tests/test_scenarios.py``. If ``greedy_self_consumption`` violates nothing
-here, every tariff scores identically and the challenge has no signal.
+The population must **stress the feeder under the naive baseline**, and a
+better controller must be able to do something about it. Both are calibration
+targets to verify, not assumptions -- see the acceptance test in
+``tests/test_scenarios.py``.
+
+Two ways to get this wrong, and the second is less obvious:
+
+* Size too small and nothing ever violates. Every tariff then scores
+  identically and the challenge has no signal.
+* Size PV too *large* and the batteries saturate before noon. Control then has
+  no authority: the naive and the do-nothing baselines converge, because the
+  peak is simply "all the generation minus the load" whatever anyone does.
+  This is a real property of a fully-solarized quarter, and it is exactly why
+  the reference PV is 6-10 kWp rather than the 8-14 kWp a big roof would take.
 """
 
 from dataclasses import dataclass
@@ -53,6 +62,37 @@ EPISODE_DAYS = 7
 EPISODE_STEPS = STEPS_PER_DAY * EPISODE_DAYS
 
 GRID_MODEL = "cigre_lv_consumer"
+
+#: Multiplier on the low-voltage network impedance -- see :func:`weaken_feeder`.
+#:
+#: The bundled CIGRE feeder has an end-of-line Thevenin impedance of about
+#: 0.135 ohm, which is a short, generously dimensioned *urban* feeder -- a fair
+#: model of a dense city network. But PV congestion is not an urban
+#: phenomenon. It bites on suburban and rural feeders: longer runs, thinner
+#: conductor, detached houses with large roofs and low coincident load.
+#:
+#: Calibration, with the numbers, since this is the constant that decides
+#: whether the challenge has any signal at all:
+#:
+#: ===== ========= ============ ==========
+#: scale end-of-line  naive >1.05  authority
+#: ===== ========= ============ ==========
+#: 1.0   0.135 ohm   0.00 %       none
+#: 3.5   0.459 ohm   0.13 %       marginal
+#: 7.0   0.912 ohm   0.73 %       13 % peak
+#: ===== ========= ============ ==========
+#:
+#: 3.5 lands exactly on IEC 60725's reference LV network impedance
+#: (0.4 + j0.25 ohm), the standard benchmark for a weak connection point --
+#: but at that strength the naive population barely violates and a controller
+#: has almost nothing to work with.
+#:
+#: 7.0 gives about 0.91 ohm, roughly twice the IEC reference: a long rural or
+#: outer-suburban feeder, where a single 5 kW injection moves the local
+#: voltage by around 3 %. That is a real and common feeder, and it is where
+#: distributed PV actually causes trouble. Lower it to 3.5 for a conservative
+#: run; the challenge simply gets harder to score.
+FEEDER_IMPEDANCE_SCALE = 7.0
 
 
 @dataclass(frozen=True)
@@ -122,10 +162,10 @@ REFERENCE_POPULATION: tuple[HouseholdType, ...] = (
         daily_consumption_kwh=12.0,
         s_load_max_kva=15.0,
         s_pq_max_kva=22.0,
-        pv_kwp=8.0,
+        pv_kwp=6.0,
         battery_kwh=0.0,
         battery_kw=0.0,
-        s_inv_max_kva=10.0,
+        s_inv_max_kva=7.0,
         far_end=False,
     ),
     HouseholdType(
@@ -134,10 +174,10 @@ REFERENCE_POPULATION: tuple[HouseholdType, ...] = (
         daily_consumption_kwh=12.0,
         s_load_max_kva=15.0,
         s_pq_max_kva=22.0,
-        pv_kwp=11.0,
+        pv_kwp=8.0,
         battery_kwh=13.0,
         battery_kw=5.0,
-        s_inv_max_kva=12.0,
+        s_inv_max_kva=10.0,
         far_end=True,
     ),
     HouseholdType(
@@ -146,10 +186,10 @@ REFERENCE_POPULATION: tuple[HouseholdType, ...] = (
         daily_consumption_kwh=30.0,
         s_load_max_kva=22.0,
         s_pq_max_kva=22.0,
-        pv_kwp=14.0,
+        pv_kwp=10.0,
         battery_kwh=20.0,
         battery_kw=10.0,
-        s_inv_max_kva=15.0,
+        s_inv_max_kva=13.0,
         far_end=True,
     ),
 )
@@ -190,6 +230,77 @@ class Population:
     def mask_for(self, type_name: str) -> np.ndarray:
         """Boolean mask over connection points selecting one household type."""
         return np.array([name == type_name for name in self.type_of_pq], dtype=bool)
+
+
+def weaken_feeder(admittance: np.ndarray, base_v_kv: np.ndarray, scale: float) -> np.ndarray:
+    """Multiply every low-voltage branch impedance by `scale`.
+
+    Longer runs and thinner conductor, which is what separates a suburban
+    feeder from an urban one. The transformer branch is deliberately left
+    alone: this changes the *network*, not the substation, so the two effects
+    stay separable when reading a result.
+
+    A bus admittance matrix holds ``Y_ij = -y_ij`` off the diagonal and
+    ``Y_ii = sum_j y_ij + shunt``. Scaling a branch admittance by ``1/scale``
+    therefore divides its off-diagonal entries and moves the difference back
+    onto both diagonals, which is what keeps the row sums -- and so the shunt
+    content, which is negligible at LV but must not be invented -- unchanged.
+    """
+    if scale == 1.0:
+        return admittance
+    if scale <= 0.0:
+        raise ValueError(f"impedance scale must be positive, got {scale}")
+
+    y = np.array(admittance, dtype=np.complex128, copy=True)
+    low_voltage = np.asarray(base_v_kv) < 1.0
+    num_bus = y.shape[0]
+
+    for i in range(num_bus):
+        for j in range(num_bus):
+            if i == j or not (low_voltage[i] and low_voltage[j]):
+                continue
+            if abs(y[i, j]) < 1e-12:
+                continue
+            scaled = y[i, j] / scale
+            y[i, i] += y[i, j] - scaled
+            y[i, j] = scaled
+
+    return y.astype(admittance.dtype)
+
+
+def grid_arrays(scale: float = FEEDER_IMPEDANCE_SCALE) -> dict:
+    """The grid asset's arrays, with the LV network weakened by `scale`."""
+    from gll_env.assets.serialization import load_asset_arrays
+    from gll_env.factories import GRID_ASSETS_DIR
+
+    arrays = dict(load_asset_arrays(GRID_MODEL, asset_dir=GRID_ASSETS_DIR))
+    arrays["admittance"] = jnp.asarray(
+        weaken_feeder(
+            np.asarray(arrays["admittance"]),
+            np.asarray(arrays["base_v_kv"]),
+            scale,
+        )
+    )
+    return arrays
+
+
+def end_of_line_impedance_ohm(scale: float = FEEDER_IMPEDANCE_SCALE) -> float:
+    """Thevenin impedance magnitude at the worst connection point.
+
+    The number to compare against IEC 60725's 0.4 + j0.25 ohm reference when
+    deciding whether a feeder is realistically weak.
+    """
+    arrays = grid_arrays(scale)
+    admittance = np.asarray(arrays["admittance"]).astype(np.complex128)
+    base_v_kv = np.asarray(arrays["base_v_kv"])
+    slack = int(np.asarray(arrays["slack_id"])[0])
+    pq_id = np.asarray(arrays["pq_id"]).astype(int)
+
+    keep = [i for i in range(admittance.shape[0]) if i != slack]
+    reduced = np.linalg.inv(admittance[np.ix_(keep, keep)])
+    position = {bus: i for i, bus in enumerate(keep)}
+    z_base = float(np.min(base_v_kv[base_v_kv < 1.0])) ** 2 / float(arrays["base_s_mva"])
+    return float(max(abs(reduced[position[b], position[b]]) * z_base for b in pq_id))
 
 
 def _feeder_order() -> np.ndarray:

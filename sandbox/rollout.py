@@ -42,14 +42,27 @@ from typing import Any, Optional
 import chex
 import jax
 import jax.numpy as jnp
+from gll_env.components.environment import EnvironmentDynamics
+from gll_env.components.grid import GridDynamics
 from gll_env.env import ProsumerGrid
+from gll_env.factories import (
+    daytime_dynamics,
+    grid_code,
+    newton_raphson,
+    prosumer_dynamics,
+    reward_fn,
+)
 from gll_env.generator import DynamicsGenerator
 from gll_env.observer import RawObserver
-from gll_env.factories import environment_model
 
 from sandbox.controller import Controller
 from sandbox.observation import LocalObservation, to_action, to_local
-from sandbox.scenarios import EPISODE_STEPS, Population
+from sandbox.scenarios import (
+    EPISODE_STEPS,
+    FEEDER_IMPEDANCE_SCALE,
+    Population,
+    grid_arrays,
+)
 
 
 @chex.dataclass(frozen=True)
@@ -95,14 +108,49 @@ class Trajectory:
     valid: chex.Array
 
 
-def build_env(population: Population, time_limit: int = EPISODE_STEPS) -> ProsumerGrid:
+def build_model(
+    population: Population, impedance_scale: float = FEEDER_IMPEDANCE_SCALE
+) -> EnvironmentDynamics:
+    """Assemble the environment model for a population.
+
+    Built component by component rather than through
+    :func:`gll_env.factories.environment_model`, for one reason: the grid is
+    constructed from *modified* asset arrays. The bundled CIGRE feeder is a
+    short urban one and the congestion this challenge is about happens on
+    suburban feeders, so the LV network is weakened to the IEC 60725 reference
+    impedance. See :data:`sandbox.scenarios.FEEDER_IMPEDANCE_SCALE`.
+
+    Everything else comes from the factories unchanged.
+    """
+    config = population.config
+    time = daytime_dynamics(config.n_steps_per_day)
+    grid = GridDynamics(
+        **grid_arrays(impedance_scale),
+        nr=newton_raphson(config.grid.get("newton_raphson", {})),
+        time=time,
+    )
+    prosumer = prosumer_dynamics(config.prosumer, num_pq=grid.num_pq, time=time)
+    model = EnvironmentDynamics(
+        prosumer=prosumer,
+        grid=grid,
+        time=time,
+        grid_code=grid_code(config.get("grid_code", {}), prosumer),
+    )
+    return model.replace(reward=reward_fn(config.reward, model))
+
+
+def build_env(
+    population: Population,
+    time_limit: int = EPISODE_STEPS,
+    impedance_scale: float = FEEDER_IMPEDANCE_SCALE,
+) -> ProsumerGrid:
     """The environment for a population.
 
     Uses :class:`~gll_env.observer.RawObserver` so the timestep carries the
     full typed observation; the harness slices it per household itself rather
     than consuming a pre-flattened MARL vector.
     """
-    model = environment_model(population.config)
+    model = build_model(population, impedance_scale)
     return ProsumerGrid(
         generator=DynamicsGenerator(model),
         observer=RawObserver(model),

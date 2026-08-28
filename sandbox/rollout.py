@@ -37,13 +37,14 @@ Two speeds, same semantics:
 Write it eager, score it fast. The results are identical.
 """
 
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import chex
 import jax
 import jax.numpy as jnp
 from gll_env.components.environment import EnvironmentDynamics
 from gll_env.components.grid import GridDynamics
+from gll_env.components.prosumer import ProsumerDynamics
 from gll_env.env import ProsumerGrid
 from gll_env.factories import (
     daytime_dynamics,
@@ -54,6 +55,7 @@ from gll_env.factories import (
 )
 from gll_env.generator import DynamicsGenerator
 from gll_env.observer import RawObserver
+from gll_env.rewards.base import RewardDynamics
 
 from sandbox.controller import Controller
 from sandbox.observation import LocalObservation, to_action, to_local
@@ -120,8 +122,15 @@ class Trajectory:
     valid: chex.Array
 
 
+#: A tariff is built against the finished prosumer model, so it is supplied as
+#: a factory rather than an instance.
+TariffFactory = Callable[[ProsumerDynamics], RewardDynamics]
+
+
 def build_model(
-    population: Population, impedance_scale: float = FEEDER_IMPEDANCE_SCALE
+    population: Population,
+    impedance_scale: float = FEEDER_IMPEDANCE_SCALE,
+    tariff: Optional[TariffFactory] = None,
 ) -> EnvironmentDynamics:
     """Assemble the environment model for a population.
 
@@ -131,6 +140,10 @@ def build_model(
     short urban one and the congestion this challenge is about happens on
     suburban feeders, so the LV network is weakened to the IEC 60725 reference
     impedance. See :data:`sandbox.scenarios.FEEDER_IMPEDANCE_SCALE`.
+
+    `tariff` replaces the reward named in the population's config. It is the
+    tariff seam: pass :func:`sandbox.tariff.my_tariff` to score your own
+    against the same population and jury the base tariff faces.
 
     Everything else comes from the factories unchanged.
     """
@@ -148,13 +161,15 @@ def build_model(
         time=time,
         grid_code=grid_code(config.get("grid_code", {}), prosumer),
     )
-    return model.replace(reward=reward_fn(config.reward, model))
+    reward = tariff(prosumer) if tariff is not None else reward_fn(config.reward, model)
+    return model.replace(reward=reward)
 
 
 def build_env(
     population: Population,
     time_limit: int = EPISODE_STEPS,
     impedance_scale: float = FEEDER_IMPEDANCE_SCALE,
+    tariff: Optional[TariffFactory] = None,
 ) -> ProsumerGrid:
     """The environment for a population.
 
@@ -162,7 +177,7 @@ def build_env(
     full typed observation; the harness slices it per household itself rather
     than consuming a pre-flattened MARL vector.
     """
-    model = build_model(population, impedance_scale)
+    model = build_model(population, impedance_scale, tariff)
     return ProsumerGrid(
         generator=DynamicsGenerator(model),
         observer=RawObserver(model),
@@ -339,8 +354,6 @@ def rollout_seeds(
     return jax.vmap(one)(keys)
 
 
-def local_observations(
-    env: ProsumerGrid, state: Any, observation: Any
-) -> LocalObservation:
+def local_observations(env: ProsumerGrid, state: Any, observation: Any) -> LocalObservation:
     """What every household sees right now. Exposed for notebooks and tests."""
     return to_local(env.environment, observation, state)

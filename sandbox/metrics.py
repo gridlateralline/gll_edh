@@ -274,8 +274,6 @@ def compare(scores: dict[str, Score]) -> str:
     header = f"{'':<{width}}" + "".join(f"{label:>13}" for label, _, _ in columns)
     lines = [header, "-" * len(header)]
     for name, value in scores.items():
-        cells = "".join(
-            fmt.format(getattr(value, field)).rjust(13) for _, field, fmt in columns
-        )
+        cells = "".join(fmt.format(getattr(value, field)).rjust(13) for _, field, fmt in columns)
         lines.append(f"{name:<{width}}{cells}")
     return "\n".join(lines)

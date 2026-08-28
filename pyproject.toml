@@ -25,7 +25,17 @@ dependencies = [
 gll_env = { git = "https://github.com/gridlateralline/gll_env.git", branch = "main" }
 
 [dependency-groups]
-dev = ["pytest", "ruff", "jupyter>=1.1.1", "matplotlib>=3.9"]
+dev = [
+    "pytest",
+    "ruff",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.9",
+    # jumanji switches the matplotlib backend to ipympl on import inside
+    # IPython, so every notebook fails at the first import without it.
+    "ipympl>=0.9",
+    "nbclient",
+    "pyarrow",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["sandbox"]

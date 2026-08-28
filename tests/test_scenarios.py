@@ -145,9 +145,10 @@ def test_the_naive_controller_makes_the_ramp_dramatically_worse(env, population)
 
     assert max_ramp_kw(naive) > 1.5 * max_ramp_kw(nothing)
     # ...while being better on everything a household would look at.
-    assert score(naive, population).community_settlement_chf > score(
-        nothing, population
-    ).community_settlement_chf
+    assert (
+        score(naive, population).community_settlement_chf
+        > score(nothing, population).community_settlement_chf
+    )
 
 
 def test_control_has_authority_over_the_outcome(env, population) -> None:
@@ -219,9 +220,10 @@ def test_violations_can_be_removed_but_not_for_free(env, population) -> None:
     naive = rollout(base_controller(), population, jax.random.PRNGKey(0), WEEK, env=env)
     capped = rollout(blunt, population, jax.random.PRNGKey(0), WEEK, env=env)
 
-    assert score(capped, population).transformer_export_peak_kw < 0.7 * score(
-        naive, population
-    ).transformer_export_peak_kw
+    assert (
+        score(capped, population).transformer_export_peak_kw
+        < 0.7 * score(naive, population).transformer_export_peak_kw
+    )
     assert score(naive, population).curtailed_share < 0.01
     assert score(capped, population).curtailed_share > 0.05
 

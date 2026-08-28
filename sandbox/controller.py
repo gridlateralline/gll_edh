@@ -145,52 +145,85 @@ def update_memory(carry: Memory, obs: LocalObservation, p_set_kw: chex.Array) ->
 # ---------------------------------------------------------------------------
 
 
-def greedy_self_consumption(
+def self_consumption(
     obs: LocalObservation,
     carry: Memory,
-    params: Any,
+    params: dict[str, chex.Array],
     key: chex.PRNGKey,
 ) -> tuple[chex.Array, Memory]:
     """Cover your own load, bank the rest. What every home battery does by default.
 
-    Setting the inverter to exactly the household's own consumption drives the
-    meter to zero, and the inverter's internal dispatch does the rest: solar
-    first, battery absorbing whatever is left over, charging on surplus and
-    discharging on shortfall. Export happens only once the battery is full,
-    import only once it is empty.
+    Asking the inverter for exactly the household's own consumption drives the
+    meter to zero, and the inverter dispatches solar before battery, so the
+    battery takes up whatever is left -- charging on surplus, discharging on
+    shortfall.
 
-    It is realistic -- this is the out-of-the-box behaviour of essentially
-    every residential storage product -- and it is also **the thing that
-    causes the problem**. Every roof peaks at noon, so every battery charges
-    at noon and every battery is full by early afternoon, at which point the
-    whole feeder exports at once. Every household cooks at seven, so every
-    battery discharges together and empties together. No price is involved;
-    the correlation is in the weather and the working day.
+    The second term is what stops that quietly curtailing. Once the battery
+    cannot absorb any more, surplus generation has nowhere to go and the
+    inverter throws it away rather than exporting it. A real household
+    exports, so ask for the part of the surplus the battery cannot take.
 
-    Takes no parameters, deliberately: it is the floor, not a design.
+    At its default parameters this is exactly the out-of-the-box behaviour of
+    essentially every residential storage product -- and it is **the thing
+    that causes the problem**. Every roof peaks at noon, so every battery
+    charges at noon and is full by early afternoon, at which point the whole
+    feeder exports at once. Every household cooks at seven, so every battery
+    empties together. No price is involved: the correlation is in the weather
+    and the working day.
+
+    Two knobs, both no-ops by default, both the obvious first thing to tune:
+
+    ``export_cap_kw``
+        Never push more than this into the grid. Surplus above it goes to the
+        battery, and once that is full, is curtailed. Blunt: it buys a flat
+        feeder by throwing energy away.
+    ``charge_after_hour``
+        Leave the battery idle before this hour of the day. Counter-intuitive
+        and much more interesting than the cap -- a battery that waits is
+        still absorbing during the afternoon export peak instead of having
+        filled up at eleven. It costs nothing in energy, only in timing.
     """
-    del params, key
-    # Cover your own load first. The inverter dispatches solar before battery,
-    # so asking for exactly the load drives the meter to zero and the battery
-    # takes up whatever is left over -- charging on surplus, discharging on
-    # shortfall.
-    #
-    # The second term is what stops that from silently curtailing. Once the
-    # battery cannot absorb any more, surplus generation has nowhere to go and
-    # the inverter throws it away rather than exporting it. A real household
-    # exports. So ask for the part of the surplus the battery cannot take.
+    del key
+    hour = 12.0 * (1.0 - obs.time_cos)  # time_cos runs +1 at midnight to -1 at noon
+    charging_allowed = hour >= params["charge_after_hour"]
+
     surplus_kw = jnp.maximum(obs.pv_available_kw - obs.load_kw, 0.0)
-    export_kw = jnp.maximum(surplus_kw - obs.bat_charge_max_kw, 0.0)
+    absorbable_kw = jnp.where(charging_allowed, obs.bat_charge_max_kw, 0.0)
+    export_kw = jnp.minimum(jnp.maximum(surplus_kw - absorbable_kw, 0.0), params["export_cap_kw"])
+
     p_set_kw = clip_to_feasible(obs.load_kw + export_kw, obs)
     return p_set_kw, update_memory(carry, obs, p_set_kw)
 
 
+def self_consumption_params() -> dict[str, chex.Array]:
+    """Defaults that reproduce plain greedy self-consumption exactly."""
+    return {
+        "export_cap_kw": jnp.float32(1.0e3),
+        "charge_after_hour": jnp.float32(0.0),
+    }
+
+
+#: The space a tuner explores when a tariff needs a household to best-respond
+#: to it. Small on purpose: a grid search should finish while somebody is
+#: watching, and two legible knobs beat six opaque ones.
+TUNING_GRID: dict[str, list[float]] = {
+    "export_cap_kw": [1.0e3, 8.0, 4.0, 2.0],
+    "charge_after_hour": [0.0, 9.0, 11.0, 13.0],
+}
+
+
 def base_controller() -> Controller:
-    """The reference household every submitted tariff is scored against."""
+    """The reference household every submitted tariff is scored against.
+
+    Tunable, and it has to be: with no price visible during an episode, a
+    tariff reaches a household only by changing what that household would
+    have wanted to do. Score a submitted tariff against a household that
+    cannot re-tune and you measure redistribution and nothing else.
+    """
     return Controller(
-        name="greedy_self_consumption",
-        fn=greedy_self_consumption,
-        params={},
+        name="self_consumption",
+        fn=self_consumption,
+        params=self_consumption_params(),
         init_carry=init_memory,
     )
 
@@ -198,7 +231,7 @@ def base_controller() -> Controller:
 def passive(
     obs: LocalObservation,
     carry: Memory,
-    params: Any,
+    params: dict[str, chex.Array],
     key: chex.PRNGKey,
 ) -> tuple[chex.Array, Memory]:
     """Never use the battery: whatever the roof makes goes straight to the grid.
@@ -213,7 +246,12 @@ def passive(
 
 
 def passive_controller() -> Controller:
-    return Controller(name="passive", fn=passive, params={}, init_carry=init_memory)
+    return Controller(
+        name="passive",
+        fn=passive,
+        params=self_consumption_params(),
+        init_carry=init_memory,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -242,20 +280,48 @@ def my_controller(
     your neighbours using ``key``.
     """
     del key
-    headroom = jnp.maximum(params["voltage_setpoint_pu"] - obs.voltage_pu, 0.0)
-    droop_kw = params["droop_kw_per_pu"] * headroom
-    target_kw = jnp.minimum(obs.load_kw + droop_kw, obs.load_kw + params["export_cap_kw"])
-    p_set_kw = clip_to_feasible(target_kw, obs)
+    # Start from working self-consumption, then trim exports when this
+    # household's own terminal voltage says the neighbourhood is already
+    # pushing hard. Everything above is what a real battery does; only the
+    # `allowance_kw` line is the design.
+    surplus_kw = jnp.maximum(obs.pv_available_kw - obs.load_kw, 0.0)
+    export_kw = jnp.maximum(surplus_kw - obs.bat_charge_max_kw, 0.0)
+
+    # Voltage droop, trimming the standing allowance. Note the scale: on a
+    # stiff feeder `excess_pu` is a few thousandths, so `droop_kw_per_pu` has
+    # to be in the hundreds before it changes anything -- and if the allowance
+    # it trims never binds in the first place, nothing happens at any gain.
+    excess_pu = jnp.maximum(obs.voltage_pu - params["voltage_setpoint_pu"], 0.0)
+    allowance_kw = jnp.maximum(params["export_cap_kw"] - params["droop_kw_per_pu"] * excess_pu, 0.0)
+
+    p_set_kw = clip_to_feasible(obs.load_kw + jnp.minimum(export_kw, allowance_kw), obs)
     return p_set_kw, update_memory(carry, obs, p_set_kw)
 
 
 def my_controller_params() -> dict[str, chex.Array]:
     """Starting parameters. These are what you tune across episodes."""
     return {
-        "voltage_setpoint_pu": jnp.float32(1.06),
+        # The allowance a droop of zero leaves in place. Start it where it
+        # does not bind, so the default really is plain self-consumption.
+        "export_cap_kw": jnp.float32(1.0e3),
+        # Where "my neighbourhood is pushing hard" begins. On the urban feeder
+        # voltage barely reaches 1.02, so a setpoint above that never fires --
+        # check the range you are actually working in before picking one.
+        "voltage_setpoint_pu": jnp.float32(1.005),
+        # kW of allowance surrendered per pu of excess. Zero by default: the
+        # example does nothing until you or a tuner make it.
         "droop_kw_per_pu": jnp.float32(0.0),
-        "export_cap_kw": jnp.float32(0.0),
     }
+
+
+#: What a tuner sweeps for :func:`my_controller`. Yours should name whichever
+#: of your own parameters are worth searching; anything omitted keeps its
+#: default.
+MY_TUNING_GRID: dict[str, list[float]] = {
+    "export_cap_kw": [1.0e3, 6.0, 3.0],
+    "voltage_setpoint_pu": [1.000, 1.010],
+    "droop_kw_per_pu": [0.0, 300.0],
+}
 
 
 def my_controller_bundle() -> Controller:
@@ -265,3 +331,24 @@ def my_controller_bundle() -> Controller:
         params=my_controller_params(),
         init_carry=init_memory,
     )
+
+
+__all__ = [
+    "MY_TUNING_GRID",
+    "TUNING_GRID",
+    "Controller",
+    "ControllerFn",
+    "LocalObservation",
+    "Memory",
+    "base_controller",
+    "clip_to_feasible",
+    "init_memory",
+    "my_controller",
+    "my_controller_bundle",
+    "my_controller_params",
+    "passive",
+    "passive_controller",
+    "self_consumption",
+    "self_consumption_params",
+    "update_memory",
+]

@@ -172,9 +172,7 @@ def to_local(
     # bus_voltage_deviation is a kV offset from nominal, and pu_to_kv is a
     # plain scale, so dividing by the bus's own base recovers per unit exactly.
     base_kv = jnp.asarray(model.grid.base_v_kv, dtype=jnp.float32)
-    voltage_pu = 1.0 + jnp.take(
-        jnp.asarray(grid.bus_voltage_deviation) / base_kv, bus
-    )
+    voltage_pu = 1.0 + jnp.take(jnp.asarray(grid.bus_voltage_deviation) / base_kv, bus)
 
     # action_constraints live in normalized [-1, 1] space; action_scale carries
     # them back to kWh, and step_duration_h to kW.

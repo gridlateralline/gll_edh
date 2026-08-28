@@ -237,6 +237,14 @@ class Population:
         """Type name per agent, in agent order."""
         return tuple(self.type_of_pq[pq] for pq in self.inverter_id)
 
+    def pq_bus_id(self) -> np.ndarray:
+        """Global bus index of each connection point.
+
+        Grid quantities are indexed by bus and household quantities by
+        connection point; anything joining the two needs this hop.
+        """
+        return np.asarray(grid_arrays()["pq_id"]).astype(int)
+
     def mask_for(self, type_name: str) -> np.ndarray:
         """Boolean mask over connection points selecting one household type."""
         return np.array([name == type_name for name in self.type_of_pq], dtype=bool)

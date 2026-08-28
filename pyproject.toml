@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gll_edh"
+version = "0.1.0"
+authors = [{ name = "ewz - Zurich Municipal Electric Utility" }]
+license = { file = "LICENSE" }
+description = "Retroactive grid-pricing sandbox for the Energy Data Hackdays 2026"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+keywords = ["energy", "grid", "tariff", "jax", "hackathon"]
+dependencies = [
+    "gll_env",
+    "jax==0.5.3",
+    "numpy>=1.26",
+    "pandas>=2.2",
+]
+
+# gll_env is not published to PyPI. This pin becomes a released tag before the
+# repo goes public; until then it tracks the branch carrying the reward
+# component. See README, Install.
+[tool.uv.sources]
+gll_env = { git = "https://github.com/gridlateralline/gll_env.git", branch = "main" }
+
+[dependency-groups]
+dev = ["pytest", "ruff", "jupyter>=1.1.1", "matplotlib>=3.9"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["sandbox"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["A", "B", "E", "F", "I", "N", "W", "RUF"]
+ignore = ["E731", "A002", "A003", "A005", "B017"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]

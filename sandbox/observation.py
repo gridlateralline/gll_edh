@@ -102,6 +102,15 @@ class LocalObservation:
     impossible to peek at a neighbour.
 
     Attributes:
+        hour: Hour of the coming interval, 0 to 24, measured from midnight.
+            **This is how you read the clock.** It comes straight off the
+            environment's own `interval_start`, so it is exact and it is the
+            interval you are about to act in.
+
+            Do not try to reconstruct it from `time_sin`/`time_cos`. Those are
+            deliberately a *pair* -- one alone is ambiguous, since a cosine is
+            symmetric about noon -- and they describe the interval's MIDPOINT,
+            so even a correct `atan2` of the two lands half an interval late.
         time_sin: Sine of the time of day. Together with `time_cos` this is a
             continuous clock with no discontinuity at midnight.
         time_cos: Cosine of the time of day.
@@ -136,6 +145,7 @@ class LocalObservation:
     something it will not get.
     """
 
+    hour: chex.Array
     time_sin: chex.Array
     time_cos: chex.Array
     voltage_pu: chex.Array
@@ -156,6 +166,7 @@ class LocalObservation:
         Nobody should have to learn a type hierarchy to write a heuristic.
         """
         return {
+            "hour": self.hour,
             "time_sin": self.time_sin,
             "time_cos": self.time_cos,
             "voltage_pu": self.voltage_pu,
@@ -212,6 +223,7 @@ def to_local(
     scale = jnp.asarray(model.action_scale) / step_h
 
     return LocalObservation(
+        hour=jnp.broadcast_to(jnp.asarray(clock.interval_start), (num_agents,)),
         time_sin=jnp.broadcast_to(jnp.asarray(clock.time_sin), (num_agents,)),
         time_cos=jnp.broadcast_to(jnp.asarray(clock.time_cos), (num_agents,)),
         voltage_pu=voltage_pu,

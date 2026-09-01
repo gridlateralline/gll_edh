@@ -30,7 +30,6 @@ from sandbox.controller import (
     LocalObservation,
     Memory,
     base_controller,
-    hour_of_day,
     passive_controller,
 )
 from sandbox.evaluate import Submission, evaluate
@@ -82,6 +81,7 @@ def test_the_controller_is_handed_a_price_free_observation(population, env) -> N
 
     fields = set(seen[0].as_dict())
     assert fields == {
+        "hour",
         "time_sin",
         "time_cos",
         "voltage_pu",
@@ -133,23 +133,32 @@ def test_any_action_at_all_is_survivable(population, env) -> None:
         assert bool(jnp.all(jnp.isfinite(trajectory.p_realized_kw)))
 
 
-def test_the_clock_helper_recovers_the_actual_hour(population, env) -> None:
-    """The clock is a sine/cosine pair so it stays continuous across midnight,
-    which means no single component of it is an hour.
+def test_the_clock_is_exact_and_not_reconstructed(population, env) -> None:
+    """`obs.hour` comes straight off the environment's own interval_start, so
+    it is exact rather than recovered.
 
-    `12 * (1 - time_cos)` is the obvious-looking mistake: it reads 24 at noon
-    and is symmetric about it, so "after 13:00" silently also matches 11:00.
-    It shipped in the cookbook once and made a charge-delay parameter do
-    nothing."""
+    Two mistakes this pins, both of which shipped here once. `12 * (1 -
+    time_cos)` reads 24 at noon and is symmetric about it, so "after 13:00"
+    silently also matches 11:00 -- which made a charge-delay parameter do
+    nothing at all. And even a correct `atan2` of the pair lands half an
+    interval late, because the sine and cosine describe the interval's
+    MIDPOINT while an action applies from its start.
+    """
     state, timestep = env.reset(jax.random.PRNGKey(0))
     observation = to_local(env.environment, timestep.observation, state)
-
     expected = float(state.time_state.day_step) * 24.0 / 96.0
-    recovered = float(hour_of_day(observation)[0])
-    assert abs(recovered - expected) <= 0.25, (recovered, expected)
+
+    assert float(observation.hour[0]) == pytest.approx(expected, abs=1e-4)
 
     naive = 12.0 * (1.0 - float(observation.time_cos[0]))
     assert abs(naive - expected) > 0.5, "the mistake this test exists to catch"
+
+    midpoint = (
+        float(jnp.arctan2(observation.time_sin[0], observation.time_cos[0]) % (2 * jnp.pi))
+        * 24.0
+        / (2 * jnp.pi)
+    )
+    assert midpoint == pytest.approx(expected + 0.125, abs=1e-3), "half an interval late"
 
 
 def test_my_idea_is_wired_end_to_end(population) -> None:

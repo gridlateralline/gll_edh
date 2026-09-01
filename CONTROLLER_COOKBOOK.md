@@ -18,7 +18,8 @@ so you cannot look at a neighbour even by accident.
 
 | field | unit | meaning |
 |---|---|---|
-| `time_sin`, `time_cos` | — | clock, continuous across midnight |
+| `hour` | h | **the clock.** 0–24, start of the coming interval |
+| `time_sin`, `time_cos` | — | the same clock, smooth across midnight |
 | `voltage_pu` | pu | your own bus. Correlates +0.99 with congestion — but see below |
 | `meter_kw` | kW | your net flow last interval, + = injecting |
 | `load_kw` | kW | your consumption last interval |
@@ -47,14 +48,17 @@ judged against.
 ## Getting hours out of the clock
 
 ```python
-from sandbox.controller import hour_of_day
-hour = hour_of_day(obs)      # 0 .. 24
+obs.hour        # 0 .. 24, start of the interval you are about to act in
 ```
 
-The clock arrives as a sine/cosine pair so it stays continuous across
-midnight, which means **you cannot read an hour off either one alone**.
-`12 * (1 - time_cos)` looks right and is not — it peaks at 24 at noon and is
-symmetric about it, so "after 13:00" quietly also matches 11:00.
+That is all. It comes straight off the environment's own clock, so it is exact.
+
+`time_sin` / `time_cos` are there too, for anyone who wants a feature that is
+smooth across midnight. **Do not reconstruct the hour from them.** They are a
+pair because either alone is ambiguous — a cosine is symmetric about noon, so
+`12 * (1 - time_cos)` reads 24 at midday and quietly matches 11:00 as well as
+13:00 — and they describe the interval's *midpoint*, so even a correct
+`atan2` of the two lands half an interval late.
 
 ## Five JAX rules
 

@@ -25,7 +25,7 @@ Everything else in ``sandbox/`` is machinery you can ignore.
 
 import jax.numpy as jnp
 
-from sandbox.controller import clip_to_feasible, hour_of_day, update_memory
+from sandbox.controller import clip_to_feasible, update_memory
 
 # ---------------------------------------------------------------------------
 # 1. THE HOUSEHOLD.  What one home does with its solar and its battery.
@@ -58,7 +58,8 @@ def my_controller(obs, memory, params, key):
         obs.bat_charge_max_kw      how fast it can still charge
         obs.bat_discharge_max_kw   how fast it can still discharge
         obs.p_min_kw, obs.p_max_kw what you are allowed to ask for
-        obs.time_sin, obs.time_cos the clock
+        obs.hour                   0 to 24 -- this is the clock
+        obs.time_sin, obs.time_cos the clock again, smooth across midnight
 
     `memory` is yours, carried to the next interval. `key` is a random number
     seed -- useful if you want households to deliberately not act in unison.
@@ -69,8 +70,7 @@ def my_controller(obs, memory, params, key):
     """
     del key
 
-    hour = hour_of_day(obs)  # 0 to 24. Use this, not time_cos directly.
-    charging_allowed = hour >= params["charge_after_hour"]
+    charging_allowed = obs.hour >= params["charge_after_hour"]
 
     surplus_kw = jnp.maximum(obs.pv_available_kw - obs.load_kw, 0.0)
     absorbable_kw = jnp.where(charging_allowed, obs.bat_charge_max_kw, 0.0)
@@ -80,7 +80,7 @@ def my_controller(obs, memory, params, key):
     # Ask for anything at all; it is clipped to what is physically possible, so
     # a controller cannot break the simulation. Some starting points:
     #   * act on obs.load_forecast_kw instead of obs.load_kw
-    #   * hold battery capacity back for the evening using `hour`
+    #   * hold battery capacity back for the evening using obs.hour
     #   * remember something in `memory` and react to a trend, not a level
     #   * use `key` to stagger against your neighbours
     # ===========================================================================

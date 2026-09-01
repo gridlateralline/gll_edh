@@ -184,10 +184,13 @@ def test_a_nodal_tariff_needs_no_knowledge_of_gll_env(population) -> None:
     have to open the simulator's source, in either seam.
 
     The controller side was already clean. This pins the tariff side: a price
-    that depends on WHERE a household sits -- the most ambitious thing anyone
-    is likely to try -- written against `grid.*` alone, with no environment
-    state types, no per-unit conversions and no bus-versus-connection-point
-    index hops.
+    that reads per-node quantities -- the most ambitious thing anyone is likely
+    to try -- written against `grid.*` alone, with no environment state types,
+    no per-unit conversions and no bus-versus-connection-point index hops.
+
+    The charge below is plumbing, not a recommendation. Pricing the voltage
+    LEVEL charges a household for a condition its neighbours mostly created;
+    see the note in ``my_idea.py``.
     """
 
     def nodal(grid, params):

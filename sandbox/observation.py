@@ -272,18 +272,31 @@ class GridView:
     fact.
 
     It exists so that writing a tariff never requires reading `gll_env`.
-    Everything a price could reasonably depend on is here, flat and named, in
+    Everything a price is likely to depend on is here, flat and named, in
     kW / kWh / pu -- no per-unit conversions, no bus-versus-connection-point
     index hops, no environment state types.
+
+    It is a fixed set, and deliberately not an exhaustive one. A tariff that
+    needs something absent -- per-branch flows, the power-flow Jacobian,
+    reactive power per node -- overrides
+    :meth:`~sandbox.tariff.MyTariff.settle` instead and receives the full
+    environment state and dynamics. That is the escape hatch, it is supported,
+    and it is the one place where reading `gll_env` becomes necessary. Ask for
+    a field here if you find yourself using it twice.
 
     Attributes:
         net_kwh: (num_pq,) Net energy at each connection point over the
             interval, positive when that household pushed into the grid.
         net_kw: (num_pq,) The same thing as a power.
-        voltage_pu: (num_pq,) Voltage at each connection point. **This is
-            where a household's location shows up.** Two households exporting
-            equally do not strain the network equally, and this is the
-            difference -- it is what makes a price nodal rather than flat.
+        voltage_pu: (num_pq,) Voltage at each connection point.
+
+            Careful with this one. A bus voltage is mostly made by OTHER
+            households, so pricing the level charges exposure rather than
+            contribution: a household at the end of a busy line pays for a
+            condition it did not create, and cutting its own injection barely
+            moves it. A locational price wants the SENSITIVITY of the binding
+            quantity to that household's own injection; this is an input to
+            estimating that, not the answer.
         transformer_kw: () Throughput at the substation, positive when the
             feeder draws from the grid and negative when it exports.
         losses_kw: () What the network itself consumed. Quadratic in flow, so

@@ -110,9 +110,8 @@ def my_congestion_charge(grid, params):
 
         grid.net_kwh        what each household pushed (+) or drew (-)
         grid.net_kw         the same as a power
-        grid.voltage_pu     voltage at each one. THIS IS WHERE LOCATION LIVES:
-                            two households exporting equally do not strain the
-                            network equally, and this is the difference
+        grid.voltage_pu     voltage at each one -- but read the warning below
+                            before pricing on it
         grid.transformer_kw  throughput at the substation, + = drawing
         grid.losses_kw       what the network itself burned
         grid.hour            0 to 24
@@ -139,14 +138,44 @@ def my_congestion_charge(grid, params):
     share = jnp.where(total > 1e-9, contribution / total, 0.0)
 
     # === YOUR IDEA GOES HERE ===================================================
-    # The default ignores grid.voltage_pu entirely, which is why it is crude:
-    # every household sees the same congestion number, so a population tuned
-    # against it may synchronise harder rather than less. A price that leaned
-    # on where the strain actually is would not have that problem.
+    # The default is crude in a specific way: every household on the feeder
+    # sees the same congestion number, so a population tuned against it may
+    # synchronise harder rather than less. Making it locational is the obvious
+    # improvement -- but see "exposure is not contribution" below before
+    # reaching for grid.voltage_pu.
     # ===========================================================================
 
     charge_chf = params["price_chf_per_kwh"] * excess_kwh * share
     return charge_chf - jnp.mean(charge_chf)  # rebate: sums to zero
+
+
+# --- Exposure is not contribution -------------------------------------------
+#
+# The tempting locational tariff is "charge each household in proportion to the
+# voltage at its own bus". Resist it, or at least know what it does.
+#
+# A household's bus voltage is mostly made by OTHER households. Someone at the
+# end of a line where the neighbours export heavily sits at a high voltage
+# whether or not they export anything themselves, so a price on the voltage
+# LEVEL charges them for a condition they did not create -- and if they cut
+# their own injection, the voltage barely moves, so the charge barely falls.
+# It taxes position and gives almost no marginal incentive, which is close to
+# the opposite of what a congestion price is for.
+#
+# The default above avoids this by construction: it charges each household its
+# own share of the excess flow, which is a quantity that household actually
+# caused and can actually change.
+#
+# A locational price done properly charges SENSITIVITY, not level -- how much
+# does the binding quantity move per kW of *this* household's injection. That
+# is a real and interesting thing to build, and grid.voltage_pu is an input to
+# estimating it rather than the answer.
+#
+# Worth noting the contrast with fair LEG underneath, which is also
+# interdependent -- your settlement depends on what everyone else did, through
+# the community match ratio. The difference is that the match ratio is applied
+# to everyone equally and pro rata, so interdependence there does not become a
+# charge for where you happen to live.
 
 
 # ---------------------------------------------------------------------------

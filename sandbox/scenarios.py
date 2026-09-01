@@ -442,6 +442,10 @@ def assign_population(
                     "solar": {"peak_power_kW": [h.pv_kwp for h in agents]},
                 },
             },
+            # Randomness is left at gll_env's defaults, deliberately. See
+            # the note on weather at the bottom of this module before
+            # changing clearness_* or load_factor_*.
+            #
             # Fair LEG: ewz's published local-electricity-community tariff, and
             # therefore the status quo. The challenge is to beat what is
             # actually done today, not a toy.
@@ -474,3 +478,44 @@ def peak_power_kw(population: Population) -> jnp.ndarray:
         [by_name[name].s_inv_max_kva for name in population.type_of_agent()],
         dtype=jnp.float32,
     )
+
+
+# ---------------------------------------------------------------------------
+# On weather, and why the stochastic parameters are left alone
+# ---------------------------------------------------------------------------
+#
+# `SolarDynamics` and `LoadDynamics` carry mean-reverting noise processes
+# (clearness_reversion / clearness_mean / clearness_std, load_factor_reversion
+# / load_factor_std). This scenario uses their defaults. Measured, over twenty
+# seven-day episodes:
+#
+#     default (rev 0.05, std 0.10)   3.6 % week-to-week CV,  8.2 % day-to-day
+#     clearness_std 0.20             3.6 %                   8.3 %
+#     clearness_std 0.30             3.3 %                   7.4 %
+#     clearness_reversion 0.005      5.8 %                  12.3 %
+#
+# Two things worth knowing before reaching for a knob.
+#
+# **clearness_std does not control weather variability.** Tripling it moves
+# week-to-week spread DOWN, because the process reverts fast enough that larger
+# steps are pulled straight back and clip harder at the ends. The parameter
+# that reads like "how variable is the weather" is really "how jagged is the
+# walk". clearness_reversion is the lever that does something, and even a
+# tenfold slowdown only reaches 5.8 %.
+#
+# **The low variance is a feature here, not an oversight.** Real Swiss weeks
+# vary 30-50 % in yield; this one produces a typical week, repeated. That is
+# what makes twenty seeds enough to rank submissions -- every pairwise
+# comparison between reference controllers is distinguishable at 95 %
+# confidence, including differences under 1 kW. Realistic weather would swamp
+# small differences and need far more episodes than a two-day event can spend.
+#
+# What is given up is real: no cloudy-week-versus-sunny-week, and no
+# seasonality at all, since clearness_mean is pinned at 0.6 with no solar
+# declination. Every episode is the same season. A controller cannot be tested
+# for weather robustness here.
+#
+# If that is ever wanted, the fix is not in this file: clearness_mean would
+# have to be drawn per episode in `gll_env`, so that an episode can be a
+# cloudy week rather than an average one. It is a fixed field of the dynamics
+# today, not something reset() samples.

@@ -255,8 +255,20 @@ def revenue_adequate(candidate: Score, reference: Score) -> bool:
     return bool(deviation / target <= REVENUE_TOLERANCE)
 
 
-def compare(scores: dict[str, Score]) -> str:
-    """A readable table. The whole jury, one row per candidate."""
+#: What a participant needs while iterating. The rest of the jury is real, and
+#: is one `detail=True` away -- but eleven columns is not a thing anybody reads
+#: between two edits.
+HEADLINE = (
+    "transformer_export_peak_kw",
+    "max_ramp_kw",
+    "coincidence_factor",
+    "curtailed_share",
+    "community_settlement_chf",
+)
+
+
+def compare(scores: dict[str, Score], detail: bool = True) -> str:
+    """A readable table. `detail=False` shows only the five that matter most."""
     columns = [
         ("export_pk_kW", "transformer_export_peak_kw", "{:.1f}"),
         ("draw_pk_kW", "transformer_draw_peak_kw", "{:.1f}"),
@@ -270,6 +282,8 @@ def compare(scores: dict[str, Score]) -> str:
         ("CHF", "community_settlement_chf", "{:.0f}"),
         (">1.05", "over_voltage_share", "{:.2%}"),
     ]
+    if not detail:
+        columns = [c for c in columns if c[1] in HEADLINE]
     width = max(len(name) for name in scores) + 2
     header = f"{'':<{width}}" + "".join(f"{label:>13}" for label, _, _ in columns)
     lines = [header, "-" * len(header)]

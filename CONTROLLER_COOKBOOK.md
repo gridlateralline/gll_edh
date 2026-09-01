@@ -18,8 +18,9 @@ so you cannot look at a neighbour even by accident.
 
 | field | unit | meaning |
 |---|---|---|
-| `time_sin`, `time_cos` | — | clock, continuous across midnight |
-| `voltage_pu` | pu | your own bus. **The congestion signal.** |
+| `hour` | h | **the clock.** 0–24, start of the coming interval |
+| `time_sin`, `time_cos` | — | the same clock, smooth across midnight |
+| `voltage_pu` | pu | your own bus. Correlates +0.99 with congestion — but see below |
 | `meter_kw` | kW | your net flow last interval, + = injecting |
 | `load_kw` | kW | your consumption last interval |
 | `load_forecast_kw` | kW | your expected consumption, coming interval |
@@ -31,6 +32,14 @@ so you cannot look at a neighbour even by accident.
 **No price.** Real settlement lags past the end of an episode. Tune your
 parameters across episodes instead — that is what "anticipate it" means.
 
+**And do not over-trust voltage.** It tracks congestion almost perfectly, but
+82% of it is already implied by your own PV, your own load and the clock. The
+part that is genuinely about your neighbourhood is 0.13% of nominal on the
+urban feeder — below what a real smart meter resolves. On `rural` it is 0.68%
+and worth using. Check which feeder you are on before building a rule around
+it; a voltage threshold on the urban feeder is an expensive way to read a
+clock.
+
 `p_min_kw` / `p_max_kw` already fold in your inverter rating, your grid
 connection, your battery's state and the reactive power Q(U) committed on your
 behalf. They are narrower than your nameplate, and they are what an action is
@@ -39,8 +48,17 @@ judged against.
 ## Getting hours out of the clock
 
 ```python
-hour = 12.0 * (1.0 - obs.time_cos)   # +1 at midnight, -1 at noon
+obs.hour        # 0 .. 24, start of the interval you are about to act in
 ```
+
+That is all. It comes straight off the environment's own clock, so it is exact.
+
+`time_sin` / `time_cos` are there too, for anyone who wants a feature that is
+smooth across midnight. **Do not reconstruct the hour from them.** They are a
+pair because either alone is ambiguous — a cosine is symmetric about noon, so
+`12 * (1 - time_cos)` reads 24 at midday and quietly matches 11:00 as well as
+13:00 — and they describe the interval's *midpoint*, so even a correct
+`atan2` of the two lands half an interval late.
 
 ## Five JAX rules
 

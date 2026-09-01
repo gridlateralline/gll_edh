@@ -184,8 +184,7 @@ def self_consumption(
         filled up at eleven. It costs nothing in energy, only in timing.
     """
     del key
-    hour = 12.0 * (1.0 - obs.time_cos)  # time_cos runs +1 at midnight to -1 at noon
-    charging_allowed = hour >= params["charge_after_hour"]
+    charging_allowed = obs.hour >= params["charge_after_hour"]
 
     surplus_kw = jnp.maximum(obs.pv_available_kw - obs.load_kw, 0.0)
     absorbable_kw = jnp.where(charging_allowed, obs.bat_charge_max_kw, 0.0)

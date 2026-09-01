@@ -36,9 +36,10 @@ from sandbox.evaluate import Submission, evaluate
 from sandbox.export import feeder_dataframe, to_dataframe
 from sandbox.metrics import coincidence_factor, revenue_adequate, score
 from sandbox.numpy_bridge import numpy_controller
+from sandbox.observation import to_grid_view, to_local
 from sandbox.rollout import Trajectory, build_env, rollout, rollout_seeds
 from sandbox.scenarios import reference_scenario
-from sandbox.tariff import MyTariff, my_tariff
+from sandbox.tariff import MyTariff, my_tariff, tariff_from_charge
 from sandbox.tuning import parameter_grid, tune
 
 DAY = 96
@@ -80,6 +81,7 @@ def test_the_controller_is_handed_a_price_free_observation(population, env) -> N
 
     fields = set(seen[0].as_dict())
     assert fields == {
+        "hour",
         "time_sin",
         "time_cos",
         "voltage_pu",
@@ -131,9 +133,92 @@ def test_any_action_at_all_is_survivable(population, env) -> None:
         assert bool(jnp.all(jnp.isfinite(trajectory.p_realized_kw)))
 
 
+def test_the_clock_is_exact_and_not_reconstructed(population, env) -> None:
+    """`obs.hour` comes straight off the environment's own interval_start, so
+    it is exact rather than recovered.
+
+    Two mistakes this pins, both of which shipped here once. `12 * (1 -
+    time_cos)` reads 24 at noon and is symmetric about it, so "after 13:00"
+    silently also matches 11:00 -- which made a charge-delay parameter do
+    nothing at all. And even a correct `atan2` of the pair lands half an
+    interval late, because the sine and cosine describe the interval's
+    MIDPOINT while an action applies from its start.
+    """
+    state, timestep = env.reset(jax.random.PRNGKey(0))
+    observation = to_local(env.environment, timestep.observation, state)
+    expected = float(state.time_state.day_step) * 24.0 / 96.0
+
+    assert float(observation.hour[0]) == pytest.approx(expected, abs=1e-4)
+
+    naive = 12.0 * (1.0 - float(observation.time_cos[0]))
+    assert abs(naive - expected) > 0.5, "the mistake this test exists to catch"
+
+    midpoint = (
+        float(jnp.arctan2(observation.time_sin[0], observation.time_cos[0]) % (2 * jnp.pi))
+        * 24.0
+        / (2 * jnp.pi)
+    )
+    assert midpoint == pytest.approx(expected + 0.125, abs=1e-3), "half an interval late"
+
+
+def test_my_idea_is_wired_end_to_end(population) -> None:
+    """The one file a participant edits must actually reach the scorer, for
+    both seams, without them assembling anything."""
+    from sandbox.check import my_controller_as_bundle, my_tariff_factory
+
+    controller = my_controller_as_bundle()
+    env = build_env(population, time_limit=DAY, tariff=my_tariff_factory())
+    trajectory = rollout(controller, population, jax.random.PRNGKey(0), DAY, env=env)
+
+    assert bool(jnp.all(trajectory.valid))
+    chex.assert_shape(trajectory.settlement_chf, (DAY, population.num_pq))
+
+
 # ---------------------------------------------------------------------------
 # Tariff
 # ---------------------------------------------------------------------------
+
+
+def test_a_nodal_tariff_needs_no_knowledge_of_gll_env(population) -> None:
+    """The point of GridView. A participant with two half days should never
+    have to open the simulator's source, in either seam.
+
+    The controller side was already clean. This pins the tariff side: a price
+    that reads per-node quantities -- the most ambitious thing anyone is likely
+    to try -- written against `grid.*` alone, with no environment state types,
+    no per-unit conversions and no bus-versus-connection-point index hops.
+
+    The charge below is plumbing, not a recommendation. Pricing the voltage
+    LEVEL charges a household for a condition its neighbours mostly created;
+    see the note in ``my_idea.py``.
+    """
+
+    def nodal(grid, params):
+        excess_pu = jnp.maximum(grid.voltage_pu - params["setpoint_pu"], 0.0)
+        charge = params["price"] * excess_pu * jnp.maximum(grid.net_kwh, 0.0)
+        return charge - jnp.mean(charge)
+
+    tariff = tariff_from_charge(nodal, {"setpoint_pu": 1.02, "price": 100.0})
+    env = build_env(population, time_limit=DAY, tariff=tariff)
+    trajectory = rollout(base_controller(), population, jax.random.PRNGKey(0), DAY, env=env)
+
+    assert bool(jnp.all(trajectory.valid))
+    chex.assert_shape(trajectory.settlement_chf, (DAY, population.num_pq))
+
+
+def test_the_grid_view_is_plain_si_over_connection_points(population, env) -> None:
+    """Everything a tariff can see, enumerated, in the units it is named in."""
+    state, _ = env.reset(jax.random.PRNGKey(0))
+    model = env.environment
+    new_state, _ = model.step(state, jnp.zeros((model.num_agents, model.action_dim), jnp.float32))
+    grid = to_grid_view(model, new_state)
+
+    chex.assert_shape(grid.net_kwh, (population.num_pq,))
+    chex.assert_shape(grid.voltage_pu, (population.num_pq,))
+    assert 0.8 < float(grid.voltage_pu.min()) and float(grid.voltage_pu.max()) < 1.2
+    assert 0.0 <= float(grid.hour) < 24.0
+    # kWh and kW must actually differ by the interval length, not be aliases.
+    chex.assert_trees_all_close(grid.net_kw * 0.25, grid.net_kwh, atol=1e-5)
 
 
 def test_the_congestion_charge_only_redistributes(population) -> None:

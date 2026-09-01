@@ -21,17 +21,49 @@ episode -- so no controller can expect to see one in time. Anticipation lives
 in the *parameters*, tuned across episodes; within an episode a household acts
 on what its own meter and inverter can read.
 
-**Voltage is the price proxy.** A nodal price is high exactly when the local
-feeder is congested, and congestion is directly measurable at the household's
-own terminal. That is the whole intellectual content of the household pathway:
-hand teams a price and they write a threshold rule, never discovering that
-their own bus voltage told them the same thing, earlier and for free.
+Voltage looks like the price proxy, and is nearly useless as one
+--------------------------------------------------------------
+A nodal price is high exactly when the local feeder is congested, and
+congestion is measurable at the household's own terminal: own bus voltage
+correlates with feeder export at **+0.99** on every feeder here. So far so
+good.
 
-And every one of these signals is *correlated across the feeder* -- one cloud
-shades the whole neighbourhood, everyone cooks at seven. So the same
-information that lets a household anticipate makes every household infer the
-same thing at the same moment. The anticipation mechanism and the herding
-mechanism are the same mechanism. That is the challenge.
+But measure how much of that a household did not already know. Regress own
+voltage on own PV, own load and the clock, and **82 % of it is already
+explained**. What is left -- the part that genuinely describes the
+neighbourhood rather than this roof -- is:
+
+======== ============= ==================================
+feeder   voltage span  residual after own PV, load, clock
+======== ============= ==================================
+urban     1.59 %        **0.13 %** of nominal
+suburban  5.16 %        0.41 %
+rural     9.42 %        0.68 %
+======== ============= ==================================
+
+A Class 1 meter resolves roughly 0.5 % of nominal. So on the default urban
+feeder the neighbourhood-only content of the voltage signal sits about four
+times *below* what a real meter could see; the same holds for the spread
+between buses at a single instant, 0.18 % on average. A controller reading
+voltage there is reading a noisy restatement of "it is noon and my roof is
+working". It becomes marginal on the suburban feeder and real on the rural
+one.
+
+Which is the deepest thing this sandbox has to say
+--------------------------------------------------
+It explains *why* herding is hard rather than merely that it happens. Every
+signal above is correlated across the feeder -- one cloud shades the whole
+neighbourhood, everyone cooks at seven -- and the one signal that is
+genuinely about the neighbourhood carries almost no information a household
+did not already have. There is nearly **no idiosyncratic local information**.
+Households move together not by accident but because the information
+structure leaves them nothing to differentiate on.
+
+So the design space is not "read the local signal better". It is to
+**manufacture differentiation where the physics provides none**: through the
+carry (memory, hysteresis, staggering), through `key` (deliberate
+desynchronisation), or -- from the other seam -- through a tariff that creates
+locational distinctions the voltages do not.
 
 Units
 -----
@@ -47,7 +79,7 @@ Every field name carries its unit, because a silent factor-of-four between kW
 and kWh is the single easiest mistake to make in this codebase.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import chex
 import jax.numpy as jnp
@@ -70,6 +102,15 @@ class LocalObservation:
     impossible to peek at a neighbour.
 
     Attributes:
+        hour: Hour of the coming interval, 0 to 24, measured from midnight.
+            **This is how you read the clock.** It comes straight off the
+            environment's own `interval_start`, so it is exact and it is the
+            interval you are about to act in.
+
+            Do not try to reconstruct it from `time_sin`/`time_cos`. Those are
+            deliberately a *pair* -- one alone is ambiguous, since a cosine is
+            symmetric about noon -- and they describe the interval's MIDPOINT,
+            so even a correct `atan2` of the two lands half an interval late.
         time_sin: Sine of the time of day. Together with `time_cos` this is a
             continuous clock with no discontinuity at midnight.
         time_cos: Cosine of the time of day.
@@ -104,6 +145,7 @@ class LocalObservation:
     something it will not get.
     """
 
+    hour: chex.Array
     time_sin: chex.Array
     time_cos: chex.Array
     voltage_pu: chex.Array
@@ -124,6 +166,7 @@ class LocalObservation:
         Nobody should have to learn a type hierarchy to write a heuristic.
         """
         return {
+            "hour": self.hour,
             "time_sin": self.time_sin,
             "time_cos": self.time_cos,
             "voltage_pu": self.voltage_pu,
@@ -180,6 +223,7 @@ def to_local(
     scale = jnp.asarray(model.action_scale) / step_h
 
     return LocalObservation(
+        hour=jnp.broadcast_to(jnp.asarray(clock.interval_start), (num_agents,)),
         time_sin=jnp.broadcast_to(jnp.asarray(clock.time_sin), (num_agents,)),
         time_cos=jnp.broadcast_to(jnp.asarray(clock.time_cos), (num_agents,)),
         voltage_pu=voltage_pu,
@@ -211,3 +255,77 @@ def to_action(model: "EnvironmentDynamics", p_set_kw: chex.Array) -> chex.Array:
     scale = jnp.asarray(model.action_scale) / step_h
     normalized = jnp.asarray(p_set_kw, dtype=jnp.float32) / scale
     return jnp.clip(normalized, -1.0, 1.0).reshape(model.num_agents, model.action_dim)
+
+
+# ---------------------------------------------------------------------------
+# What the NETWORK sees. The tariff's counterpart to LocalObservation.
+# ---------------------------------------------------------------------------
+
+
+@chex.dataclass(frozen=True)
+class GridView:
+    """The whole feeder after an interval has been solved, in SI units.
+
+    The tariff's view, and deliberately the mirror image of
+    :class:`LocalObservation`: a household sees one meter and no prices, the
+    network operator sees every connection point and every voltage, after the
+    fact.
+
+    It exists so that writing a tariff never requires reading `gll_env`.
+    Everything a price is likely to depend on is here, flat and named, in
+    kW / kWh / pu -- no per-unit conversions, no bus-versus-connection-point
+    index hops, no environment state types.
+
+    It is a fixed set, and deliberately not an exhaustive one. A tariff that
+    needs something absent -- per-branch flows, the power-flow Jacobian,
+    reactive power per node -- overrides
+    :meth:`~sandbox.tariff.MyTariff.settle` instead and receives the full
+    environment state and dynamics. That is the escape hatch, it is supported,
+    and it is the one place where reading `gll_env` becomes necessary. Ask for
+    a field here if you find yourself using it twice.
+
+    Attributes:
+        net_kwh: (num_pq,) Net energy at each connection point over the
+            interval, positive when that household pushed into the grid.
+        net_kw: (num_pq,) The same thing as a power.
+        voltage_pu: (num_pq,) Voltage at each connection point.
+
+            Careful with this one. A bus voltage is mostly made by OTHER
+            households, so pricing the level charges exposure rather than
+            contribution: a household at the end of a busy line pays for a
+            condition it did not create, and cutting its own injection barely
+            moves it. A locational price wants the SENSITIVITY of the binding
+            quantity to that household's own injection; this is an input to
+            estimating that, not the answer.
+        transformer_kw: () Throughput at the substation, positive when the
+            feeder draws from the grid and negative when it exports.
+        losses_kw: () What the network itself consumed. Quadratic in flow, so
+            synchronised behaviour costs more than its average suggests.
+        hour: () Hour of the settled interval, 0 to 24.
+    """
+
+    net_kwh: chex.Array
+    net_kw: chex.Array
+    voltage_pu: chex.Array
+    transformer_kw: chex.Numeric
+    losses_kw: chex.Numeric
+    hour: chex.Numeric
+
+
+def to_grid_view(env_model: Any, new_state: Any) -> GridView:
+    """Build the tariff's view from the environment state it just settled."""
+    grid = env_model.grid
+    pq_id = jnp.asarray(grid.pq_id, dtype=jnp.int32)
+    slack = jnp.asarray(grid.slack_id, dtype=jnp.int32)[0]
+    injection_pu = new_state.grid_state.bus_power_injection_pu
+    step_h = jnp.asarray(env_model.time.step_duration_h, dtype=jnp.float32)
+
+    net_kwh = jnp.real(new_state.prosumer_state.s_pq_realized_kvah)
+    return GridView(
+        net_kwh=net_kwh,
+        net_kw=net_kwh / step_h,
+        voltage_pu=jnp.abs(new_state.grid_state.bus_voltage_pu)[pq_id],
+        transformer_kw=grid.pu_to_kw(jnp.real(injection_pu)[slack]),
+        losses_kw=grid.pu_to_kw(jnp.sum(jnp.real(injection_pu))),
+        hour=env_model.time.observation(new_state.time_state).interval_start,
+    )

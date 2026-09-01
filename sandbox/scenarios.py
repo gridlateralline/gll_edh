@@ -47,9 +47,19 @@ Two ways to mis-size, and the second is less obvious:
 * Too small, and nothing moves. Every tariff scores identically.
 * PV too *large*, and the batteries saturate before noon. Control then has no
   authority at all: the naive and do-nothing baselines converge, because the
-  peak becomes "generation minus load" whatever anyone does. This is a real
-  property of a fully-solarized quarter, and it is why the reference PV is
-  6-10 kWp rather than the 8-14 kWp a large roof would carry.
+  peak becomes "generation minus load" whatever anyone does. Measured: at
+  twice the reference PV, the naive controller is no better than doing
+  nothing. This is a real property of a fully-solarized quarter.
+
+The reference sits between them at 9-15 kWp -- typical of a Swiss install
+today, since roofs are filled rather than matched to consumption -- against
+storage of 13-20 kWh and inverters rated at roughly 0.8 of the array.
+
+Two things measured and deliberately NOT done: bigger batteries (13 to 19 kWh
+moved control authority by 0.1 pp, because the binding ratio is surplus to
+storage and 50 % more storage does not close it), and rearranging who sits
+where on the feeder (three layouts gave the same voltage statistics to within
+0.2 pp, and voltage is already only 33 % explained by distance).
 """
 
 from dataclasses import dataclass
@@ -100,9 +110,24 @@ FEEDER_STRENGTHS: dict[str, float] = {
     "rural": 7.0,
 }
 
-#: ewz's actual network is the honest default. Over-voltage is a research
-#: question on this feeder, not the challenge.
-FEEDER_IMPEDANCE_SCALE = FEEDER_STRENGTHS["urban"]
+#: The hackathon runs on ``rural``, and the reason is the household seam.
+#:
+#: On ``urban`` a household has essentially nothing to read: own bus voltage
+#: correlates with congestion at +0.99, but 82 % of it is already implied by
+#: that household's own PV, own load and the clock, leaving a residual of
+#: 0.13 % of nominal -- about four times below what a Class 1 meter resolves.
+#: A controller "reading voltage" there is reading a noisy clock.
+#:
+#: ``rural`` lifts that residual to 0.88 %, comfortably measurable, and takes
+#: over-voltage from never to 11.6 % of bus-intervals. Turning the grid code
+#: off instead was measured and does almost nothing: Q(U) only acts outside
+#: its deadband, and on a stiff feeder voltage never gets there.
+#:
+#: ``urban`` remains available and remains the truthful model of ewz's own
+#: meshed network, where over-voltage is not the constraint and reverse flow
+#: and lost diversity are. Which constraint binds where is a submission in
+#: its own right.
+FEEDER_IMPEDANCE_SCALE = FEEDER_STRENGTHS["rural"]
 
 
 @dataclass(frozen=True)
@@ -123,7 +148,13 @@ class HouseholdType:
         battery_kwh: Usable storage. Zero means PV without storage: the
             household can curtail but cannot shift.
         battery_kw: Charge and discharge rating.
-        s_inv_max_kva: Inverter rating.
+        s_inv_max_kva: Inverter rating. Deliberately BELOW the roof: a DC/AC
+            ratio near 1.2 is what real installations use, because inverters
+            are cheaper than roof area, and the resulting clipping is normal.
+            It is also load-bearing here -- scaling inverters up with the
+            array was measured to collapse control authority to zero and to
+            decay the ramp pathology from 1.69x to 1.18x, because a household
+            that can export everything never needs its battery.
         far_end: Place this type at the far end of the feeder. Voltage rise
             is a function of distance times injection, so clustering the
             flexible households there localizes it -- without that, the nodal
@@ -172,7 +203,7 @@ REFERENCE_POPULATION: tuple[HouseholdType, ...] = (
         daily_consumption_kwh=12.0,
         s_load_max_kva=15.0,
         s_pq_max_kva=22.0,
-        pv_kwp=6.0,
+        pv_kwp=9.0,
         battery_kwh=0.0,
         battery_kw=0.0,
         s_inv_max_kva=7.0,
@@ -184,7 +215,7 @@ REFERENCE_POPULATION: tuple[HouseholdType, ...] = (
         daily_consumption_kwh=12.0,
         s_load_max_kva=15.0,
         s_pq_max_kva=22.0,
-        pv_kwp=8.0,
+        pv_kwp=12.0,
         battery_kwh=13.0,
         battery_kw=5.0,
         s_inv_max_kva=10.0,
@@ -196,7 +227,7 @@ REFERENCE_POPULATION: tuple[HouseholdType, ...] = (
         daily_consumption_kwh=30.0,
         s_load_max_kva=22.0,
         s_pq_max_kva=22.0,
-        pv_kwp=10.0,
+        pv_kwp=15.0,
         battery_kwh=20.0,
         battery_kw=10.0,
         s_inv_max_kva=13.0,

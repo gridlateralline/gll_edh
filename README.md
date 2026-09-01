@@ -216,8 +216,17 @@ A full week runs in about **one second**; a 20-seed ensemble in **eight**.
 uv sync
 ```
 
-`gll_env` — the simulator underneath — is pinned in `pyproject.toml`. If your
-machine blocks PyPI, a devcontainer is provided.
+`gll_env` — the simulator underneath — is a git dependency, and `uv.lock`
+pins it to an exact commit, so `uv sync` gives everyone the same environment
+however the upstream repository moves during the event. You never need to
+clone or read it.
+
+The repo shares `gll_env`'s pre-commit setup (ruff, `ty`, whitespace, licence
+headers, conventional commits). It is not required to participate:
+
+```bash
+uv run pre-commit install    # optional
+```
 
 ## Layout
 

@@ -28,6 +28,8 @@ gll_env = { git = "https://github.com/gridlateralline/gll_env.git", branch = "ma
 dev = [
     "pytest",
     "ruff",
+    "ty",
+    "pre-commit",
     "jupyter>=1.1.1",
     "matplotlib>=3.9",
     # jumanji switches the matplotlib backend to ipympl on import inside
@@ -50,3 +52,25 @@ ignore = ["E731", "A002", "A003", "A005", "B017"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
+
+[tool.ty.environment]
+python-version = "3.10"
+
+[tool.ty.src]
+include = ["sandbox", "tests"]
+
+[tool.ty.rules]
+# Same suppressions as gll_env, and for the same reason: chex aliases
+# (`chex.Array`, `chex.Numeric`) resolve to broad unions whose scalar members
+# are not subscriptable, lack JAX's `.at` accessor and do not support array
+# operators, so a static checker reports false positives on correct array code.
+not-subscriptable = "ignore"
+unsupported-operator = "ignore"
+not-iterable = "ignore"
+unresolved-attribute = "ignore"
+invalid-argument-type = "ignore"
+invalid-assignment = "ignore"
+invalid-return-type = "ignore"
+# The two seams take deliberately loose signatures so a participant's function
+# does not have to be annotated to run.
+invalid-method-override = "ignore"

@@ -79,7 +79,7 @@ Every field name carries its unit, because a silent factor-of-four between kW
 and kWh is the single easiest mistake to make in this codebase.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import chex
 import jax.numpy as jnp
@@ -255,3 +255,64 @@ def to_action(model: "EnvironmentDynamics", p_set_kw: chex.Array) -> chex.Array:
     scale = jnp.asarray(model.action_scale) / step_h
     normalized = jnp.asarray(p_set_kw, dtype=jnp.float32) / scale
     return jnp.clip(normalized, -1.0, 1.0).reshape(model.num_agents, model.action_dim)
+
+
+# ---------------------------------------------------------------------------
+# What the NETWORK sees. The tariff's counterpart to LocalObservation.
+# ---------------------------------------------------------------------------
+
+
+@chex.dataclass(frozen=True)
+class GridView:
+    """The whole feeder after an interval has been solved, in SI units.
+
+    The tariff's view, and deliberately the mirror image of
+    :class:`LocalObservation`: a household sees one meter and no prices, the
+    network operator sees every connection point and every voltage, after the
+    fact.
+
+    It exists so that writing a tariff never requires reading `gll_env`.
+    Everything a price could reasonably depend on is here, flat and named, in
+    kW / kWh / pu -- no per-unit conversions, no bus-versus-connection-point
+    index hops, no environment state types.
+
+    Attributes:
+        net_kwh: (num_pq,) Net energy at each connection point over the
+            interval, positive when that household pushed into the grid.
+        net_kw: (num_pq,) The same thing as a power.
+        voltage_pu: (num_pq,) Voltage at each connection point. **This is
+            where a household's location shows up.** Two households exporting
+            equally do not strain the network equally, and this is the
+            difference -- it is what makes a price nodal rather than flat.
+        transformer_kw: () Throughput at the substation, positive when the
+            feeder draws from the grid and negative when it exports.
+        losses_kw: () What the network itself consumed. Quadratic in flow, so
+            synchronised behaviour costs more than its average suggests.
+        hour: () Hour of the settled interval, 0 to 24.
+    """
+
+    net_kwh: chex.Array
+    net_kw: chex.Array
+    voltage_pu: chex.Array
+    transformer_kw: chex.Numeric
+    losses_kw: chex.Numeric
+    hour: chex.Numeric
+
+
+def to_grid_view(env_model: Any, new_state: Any) -> GridView:
+    """Build the tariff's view from the environment state it just settled."""
+    grid = env_model.grid
+    pq_id = jnp.asarray(grid.pq_id, dtype=jnp.int32)
+    slack = jnp.asarray(grid.slack_id, dtype=jnp.int32)[0]
+    injection_pu = new_state.grid_state.bus_power_injection_pu
+    step_h = jnp.asarray(env_model.time.step_duration_h, dtype=jnp.float32)
+
+    net_kwh = jnp.real(new_state.prosumer_state.s_pq_realized_kvah)
+    return GridView(
+        net_kwh=net_kwh,
+        net_kw=net_kwh / step_h,
+        voltage_pu=jnp.abs(new_state.grid_state.bus_voltage_pu)[pq_id],
+        transformer_kw=grid.pu_to_kw(jnp.real(injection_pu)[slack]),
+        losses_kw=grid.pu_to_kw(jnp.sum(jnp.real(injection_pu))),
+        hour=env_model.time.observation(new_state.time_state).interval_start,
+    )

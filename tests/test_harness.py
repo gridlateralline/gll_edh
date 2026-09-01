@@ -36,10 +36,10 @@ from sandbox.evaluate import Submission, evaluate
 from sandbox.export import feeder_dataframe, to_dataframe
 from sandbox.metrics import coincidence_factor, revenue_adequate, score
 from sandbox.numpy_bridge import numpy_controller
-from sandbox.observation import to_local
+from sandbox.observation import to_grid_view, to_local
 from sandbox.rollout import Trajectory, build_env, rollout, rollout_seeds
 from sandbox.scenarios import reference_scenario
-from sandbox.tariff import MyTariff, my_tariff
+from sandbox.tariff import MyTariff, my_tariff, tariff_from_charge
 from sandbox.tuning import parameter_grid, tune
 
 DAY = 96
@@ -177,6 +177,45 @@ def test_my_idea_is_wired_end_to_end(population) -> None:
 # ---------------------------------------------------------------------------
 # Tariff
 # ---------------------------------------------------------------------------
+
+
+def test_a_nodal_tariff_needs_no_knowledge_of_gll_env(population) -> None:
+    """The point of GridView. A participant with two half days should never
+    have to open the simulator's source, in either seam.
+
+    The controller side was already clean. This pins the tariff side: a price
+    that depends on WHERE a household sits -- the most ambitious thing anyone
+    is likely to try -- written against `grid.*` alone, with no environment
+    state types, no per-unit conversions and no bus-versus-connection-point
+    index hops.
+    """
+
+    def nodal(grid, params):
+        excess_pu = jnp.maximum(grid.voltage_pu - params["setpoint_pu"], 0.0)
+        charge = params["price"] * excess_pu * jnp.maximum(grid.net_kwh, 0.0)
+        return charge - jnp.mean(charge)
+
+    tariff = tariff_from_charge(nodal, {"setpoint_pu": 1.02, "price": 100.0})
+    env = build_env(population, time_limit=DAY, tariff=tariff)
+    trajectory = rollout(base_controller(), population, jax.random.PRNGKey(0), DAY, env=env)
+
+    assert bool(jnp.all(trajectory.valid))
+    chex.assert_shape(trajectory.settlement_chf, (DAY, population.num_pq))
+
+
+def test_the_grid_view_is_plain_si_over_connection_points(population, env) -> None:
+    """Everything a tariff can see, enumerated, in the units it is named in."""
+    state, _ = env.reset(jax.random.PRNGKey(0))
+    model = env.environment
+    new_state, _ = model.step(state, jnp.zeros((model.num_agents, model.action_dim), jnp.float32))
+    grid = to_grid_view(model, new_state)
+
+    chex.assert_shape(grid.net_kwh, (population.num_pq,))
+    chex.assert_shape(grid.voltage_pu, (population.num_pq,))
+    assert 0.8 < float(grid.voltage_pu.min()) and float(grid.voltage_pu.max()) < 1.2
+    assert 0.0 <= float(grid.hour) < 24.0
+    # kWh and kW must actually differ by the interval length, not be aliases.
+    chex.assert_trees_all_close(grid.net_kw * 0.25, grid.net_kwh, atol=1e-5)
 
 
 def test_the_congestion_charge_only_redistributes(population) -> None:

@@ -17,6 +17,12 @@ uv run jupyter lab notebooks/00_quickstart.ipynb
 Then open **[`sandbox/my_idea.py`](sandbox/my_idea.py)**. It holds two
 functions and nothing else, and it is the only file you need to touch.
 
+**You never need to read the simulator.** `gll_env` runs the power flow
+underneath, and both seams are given plain SI views of it — `obs` for one
+household, `grid` for the whole feeder — so neither function ever mentions an
+environment type, a per-unit conversion, or a bus index. One repository,
+one file.
+
 ```python
 from sandbox.my_idea import check, score
 

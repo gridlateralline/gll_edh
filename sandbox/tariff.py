@@ -60,6 +60,8 @@ from gll_env.rewards.base import CausalReward
 from gll_env.rewards.leg import LegSettlementReward, Payments
 from gll_env.types import RewardObservation, RewardState
 
+from sandbox.observation import GridView, to_grid_view
+
 if TYPE_CHECKING:
     from gll_env.components.environment import EnvironmentDynamics, EnvironmentState
 
@@ -198,6 +200,10 @@ class MyTariff(CausalReward):
             collected_chf=jnp.float32(0.0),
         )
 
+    def congestion_charge_from_view(self, grid: "GridView") -> chex.Array:
+        """Override this to price the whole feeder. See :class:`GridView`."""
+        return self.congestion_charge(grid.net_kwh)
+
     def congestion_charge(self, e_pq_kwh: chex.Array) -> chex.Array:
         """CHF each connection point owes for this interval's congestion.
 
@@ -227,8 +233,8 @@ class MyTariff(CausalReward):
         leg_state, _ = self._leg.settle(reward_state, state, new_state, dynamics)
         energy_chf = jnp.asarray(leg_state.settlement_chf, dtype=jnp.float32)
 
-        e_pq_kwh = jnp.real(new_state.prosumer_state.s_pq_realized_kvah)
-        settlement_chf = energy_chf - self.congestion_charge(e_pq_kwh)
+        grid = to_grid_view(dynamics, new_state)
+        settlement_chf = energy_chf - self.congestion_charge_from_view(grid)
 
         inverter_id = jnp.asarray(dynamics.prosumer.inverter_id, dtype=jnp.int32)
         return (
@@ -259,7 +265,7 @@ def tariff_from_charge(charge_fn, params: dict):
     """
 
     class _FromCharge(MyTariff):
-        def congestion_charge(self, e_pq_kwh: chex.Array) -> chex.Array:
-            return charge_fn(e_pq_kwh, params)
+        def congestion_charge_from_view(self, grid: GridView) -> chex.Array:
+            return charge_fn(grid, params)
 
     return lambda prosumer: _FromCharge(prosumer)

@@ -99,15 +99,23 @@ TARIFF_PARAMS = {
 }
 
 
-def my_congestion_charge(net_kwh, params):
+def my_congestion_charge(grid, params):
     """What each of the 18 connection points owes for this interval, in CHF.
 
     Added on top of ewz's real fair-LEG energy settlement, so you are pricing
     *congestion*, not electricity.
 
-    `net_kwh` is a length-18 array, one per connection point, positive when
-    that household is pushing power into the grid. You see the whole feeder --
-    that is the point of being the network operator.
+    You see the whole feeder, after the fact -- that is what being the network
+    operator means. Everything is a plain array over the 18 connection points:
+
+        grid.net_kwh        what each household pushed (+) or drew (-)
+        grid.net_kw         the same as a power
+        grid.voltage_pu     voltage at each one. THIS IS WHERE LOCATION LIVES:
+                            two households exporting equally do not strain the
+                            network equally, and this is the difference
+        grid.transformer_kw  throughput at the substation, + = drawing
+        grid.losses_kw       what the network itself burned
+        grid.hour            0 to 24
 
     **It must sum to zero.** Money you take off one household you give back to
     the others. A tariff that simply pays everybody is a subsidy, and the
@@ -119,6 +127,7 @@ def my_congestion_charge(net_kwh, params):
     congestion number, so a population tuned against it may well synchronise
     *harder*. A better tariff would distinguish *where* the strain is.
     """
+    net_kwh = grid.net_kwh
     aggregate_kwh = jnp.sum(net_kwh)
     excess_kwh = jnp.maximum(jnp.abs(aggregate_kwh) - params["headroom_kwh"], 0.0)
 
@@ -130,9 +139,10 @@ def my_congestion_charge(net_kwh, params):
     share = jnp.where(total > 1e-9, contribution / total, 0.0)
 
     # === YOUR IDEA GOES HERE ===================================================
-    # You can see more than this. `sandbox.tariff.MyTariff.settle` gets the whole
-    # solved network -- every bus voltage, every flow -- if you want a price that
-    # depends on *where* a household sits rather than only how much it pushed.
+    # The default ignores grid.voltage_pu entirely, which is why it is crude:
+    # every household sees the same congestion number, so a population tuned
+    # against it may synchronise harder rather than less. A price that leaned
+    # on where the strain actually is would not have that problem.
     # ===========================================================================
 
     charge_chf = params["price_chf_per_kwh"] * excess_kwh * share

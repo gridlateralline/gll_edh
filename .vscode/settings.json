@@ -1,0 +1,5 @@
+{
+    // Use ty for type checking; mypy is not a project dependency (see pyproject.toml).
+    "mypy-type-checker.ignorePatterns": ["**/*"],
+    "python.linting.mypyEnabled": false
+}

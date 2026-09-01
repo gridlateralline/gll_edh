@@ -145,6 +145,18 @@ def update_memory(carry: Memory, obs: LocalObservation, p_set_kw: chex.Array) ->
 # ---------------------------------------------------------------------------
 
 
+def hour_of_day(obs: "LocalObservation") -> chex.Array:
+    """Hour of the day, 0 to 24, from the clock in the observation.
+
+    The clock arrives as a sine/cosine pair so that it is continuous across
+    midnight -- but that means you cannot read an hour off either one alone.
+    ``12 * (1 - time_cos)`` looks like it works and does not: it peaks at 24 at
+    noon and is symmetric about it, so "after 13:00" also matches 11:00.
+    """
+    angle = jnp.arctan2(obs.time_sin, obs.time_cos) % (2.0 * jnp.pi)
+    return angle * (24.0 / (2.0 * jnp.pi))
+
+
 def self_consumption(
     obs: LocalObservation,
     carry: Memory,
@@ -184,8 +196,7 @@ def self_consumption(
         filled up at eleven. It costs nothing in energy, only in timing.
     """
     del key
-    hour = 12.0 * (1.0 - obs.time_cos)  # time_cos runs +1 at midnight to -1 at noon
-    charging_allowed = hour >= params["charge_after_hour"]
+    charging_allowed = hour_of_day(obs) >= params["charge_after_hour"]
 
     surplus_kw = jnp.maximum(obs.pv_available_kw - obs.load_kw, 0.0)
     absorbable_kw = jnp.where(charging_allowed, obs.bat_charge_max_kw, 0.0)
@@ -342,6 +353,7 @@ __all__ = [
     "Memory",
     "base_controller",
     "clip_to_feasible",
+    "hour_of_day",
     "init_memory",
     "my_controller",
     "my_controller_bundle",

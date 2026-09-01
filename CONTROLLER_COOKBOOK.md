@@ -47,8 +47,14 @@ judged against.
 ## Getting hours out of the clock
 
 ```python
-hour = 12.0 * (1.0 - obs.time_cos)   # +1 at midnight, -1 at noon
+from sandbox.controller import hour_of_day
+hour = hour_of_day(obs)      # 0 .. 24
 ```
+
+The clock arrives as a sine/cosine pair so it stays continuous across
+midnight, which means **you cannot read an hour off either one alone**.
+`12 * (1 - time_cos)` looks right and is not — it peaks at 24 at noon and is
+symmetric about it, so "after 13:00" quietly also matches 11:00.
 
 ## Five JAX rules
 

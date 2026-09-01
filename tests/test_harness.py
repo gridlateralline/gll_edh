@@ -30,12 +30,14 @@ from sandbox.controller import (
     LocalObservation,
     Memory,
     base_controller,
+    hour_of_day,
     passive_controller,
 )
 from sandbox.evaluate import Submission, evaluate
 from sandbox.export import feeder_dataframe, to_dataframe
 from sandbox.metrics import coincidence_factor, revenue_adequate, score
 from sandbox.numpy_bridge import numpy_controller
+from sandbox.observation import to_local
 from sandbox.rollout import Trajectory, build_env, rollout, rollout_seeds
 from sandbox.scenarios import reference_scenario
 from sandbox.tariff import MyTariff, my_tariff
@@ -129,6 +131,38 @@ def test_any_action_at_all_is_survivable(population, env) -> None:
         )
         assert bool(jnp.all(trajectory.valid))
         assert bool(jnp.all(jnp.isfinite(trajectory.p_realized_kw)))
+
+
+def test_the_clock_helper_recovers_the_actual_hour(population, env) -> None:
+    """The clock is a sine/cosine pair so it stays continuous across midnight,
+    which means no single component of it is an hour.
+
+    `12 * (1 - time_cos)` is the obvious-looking mistake: it reads 24 at noon
+    and is symmetric about it, so "after 13:00" silently also matches 11:00.
+    It shipped in the cookbook once and made a charge-delay parameter do
+    nothing."""
+    state, timestep = env.reset(jax.random.PRNGKey(0))
+    observation = to_local(env.environment, timestep.observation, state)
+
+    expected = float(state.time_state.day_step) * 24.0 / 96.0
+    recovered = float(hour_of_day(observation)[0])
+    assert abs(recovered - expected) <= 0.25, (recovered, expected)
+
+    naive = 12.0 * (1.0 - float(observation.time_cos[0]))
+    assert abs(naive - expected) > 0.5, "the mistake this test exists to catch"
+
+
+def test_my_idea_is_wired_end_to_end(population) -> None:
+    """The one file a participant edits must actually reach the scorer, for
+    both seams, without them assembling anything."""
+    from sandbox.check import my_controller_as_bundle, my_tariff_factory
+
+    controller = my_controller_as_bundle()
+    env = build_env(population, time_limit=DAY, tariff=my_tariff_factory())
+    trajectory = rollout(controller, population, jax.random.PRNGKey(0), DAY, env=env)
+
+    assert bool(jnp.all(trajectory.valid))
+    chex.assert_shape(trajectory.settlement_chf, (DAY, population.num_pq))
 
 
 # ---------------------------------------------------------------------------

@@ -7,10 +7,24 @@ Eighteen households on a real low-voltage feeder. You edit **two functions** —
 grid tariff and a household controller — and everything else is fixed: the power
 flow, the feasibility projection, the rollout, the scoring.
 
+## Start here
+
 ```bash
 uv sync
 uv run jupyter lab notebooks/00_quickstart.ipynb
 ```
+
+Then open **[`sandbox/my_idea.py`](sandbox/my_idea.py)**. It holds two
+functions and nothing else, and it is the only file you need to touch.
+
+```python
+from sandbox.my_idea import check, score
+
+check()     # ~3 s: your idea vs the reference, on one day
+score()     # the real thing: a full week, twenty weathers, the whole jury
+```
+
+Edit, `check()`, repeat. Everything below is context you can read later.
 
 ---
 
@@ -28,8 +42,8 @@ Measured on the reference week:
 
 | controller | export peak | ramp | coincidence | bill |
 |---|---|---|---|---|
-| do nothing | 46.6 kW | **6.8 kW** | 0.595 | 68 CHF |
-| self-consumption | 44.2 kW | **11.8 kW** | 0.571 | 91 CHF |
+| do nothing | 65.0 kW | **9.2 kW** | 0.728 | 241 CHF |
+| self-consumption | 61.2 kW | **14.4 kW** | 0.678 | 264 CHF |
 
 Better for each household, worse for the system they share. That is the school
 of fish: every fish using only what it can see from where it is, and the school
@@ -53,9 +67,11 @@ Own bus voltage correlates with feeder congestion at **+0.99**, so it looks
 like the obvious proxy for a nodal price. Then measure how much of it a
 household did not already know: regress it on own PV, own load and the clock
 and **82% is already explained**. The residual — the part genuinely about the
-neighbourhood — is **0.13% of nominal** on the default urban feeder, roughly
-four times *below* what a Class 1 smart meter can resolve. It reaches 0.41% on
-`suburban` and 0.68% on `rural`.
+neighbourhood — is **0.88% of nominal** on the default feeder, comfortably
+above what a Class 1 smart meter resolves. It is why the sandbox runs on
+`rural`: on ewz's own `urban` network that residual is 0.13%, roughly four
+times *below* meter resolution, and a controller "reading voltage" there is
+reading a noisy clock.
 
 That is the real finding here, and it explains *why* herding is hard rather
 than just that it happens. Every local signal is correlated across the feeder,
@@ -147,18 +163,25 @@ One hard gate: **revenue adequacy**. A tariff that simply pays everybody
 produces a delighted population and a bankrupt network operator, so it is
 disqualified rather than ranked.
 
-## What is *not* the constraint
+## Which feeder, and why it matters
 
-Over-voltage. On this feeder — ewz's own, meshed and stiff — voltage never
-leaves the band no matter what anybody does, and the Swiss Q(U) grid code holds
-it there by absorbing reactive power. Meshing buys voltage stiffness; it buys
-no thermal capacity. What binds is reverse flow at three times the forward
-peak for 42% of the week, and the loss of the diversity the network was sized
-under.
+The default is `rural` — a long feeder, end-of-line impedance 0.91 Ω, about
+twice IEC 60725's reference. Voltage breaches the 1.05 pu planning trigger
+around 8% of the week and peaks at 1.10, right at the EN 50160 limit. That is
+a genuine standards violation rather than a modelling artefact, and it is what
+gives a household something local to read.
 
-`FEEDER_STRENGTHS` in [`sandbox/scenarios.py`](sandbox/scenarios.py) also ships
-`suburban` (the IEC 60725 reference impedance) and `rural`, where voltage
-*does* bind. Which constraint bites where is itself worth a submission.
+`FEEDER_STRENGTHS` also ships **`urban`** — ewz's own network, unmodified.
+There, over-voltage simply never happens: a dense meshed feeder is stiff.
+Meshing buys voltage stiffness and no thermal capacity, so what binds instead
+is reverse flow at three times the forward peak for 42% of the week, and the
+loss of the diversity the network was planned under. Same population, same
+jury, different binding constraint — and which one bites where is worth a
+submission on its own.
+
+Turning the grid code off instead of weakening the feeder was measured and
+does almost nothing: Q(U) only acts outside its deadband, and on a stiff
+feeder voltage never gets there.
 
 ## The feeder
 
@@ -166,12 +189,18 @@ CIGRE low-voltage, 19 buses, 18 connection points, 15-minute intervals, seven
 days. Twelve households have an inverter and are agents; six are tenants who
 cannot respond to anything.
 
-| type | n | roof | battery |
-|---|---|---|---|
-| tenant | 6 | — | — |
-| pv_only | 5 | 6 kWp | — |
-| pv_battery | 5 | 8 kWp | 13 kWh |
-| large_flex | 2 | 10 kWp | 20 kWh |
+| type | n | roof | battery | inverter |
+|---|---|---|---|---|
+| tenant | 6 | — | — | — |
+| pv_only | 5 | 9 kWp | — | 7 kVA |
+| pv_battery | 5 | 12 kWp | 13 kWh | 10 kVA |
+| large_flex | 2 | 15 kWp | 20 kWh | 13 kVA |
+
+Inverters are deliberately smaller than the roof — DC/AC ≈ 1.2, which is what
+real installations use and which produces about 2% clipping. It is also
+load-bearing: sizing inverters to the array was measured to collapse control
+authority to zero, because a household that can export everything never needs
+its battery.
 
 A full week runs in about **one second**; a 20-seed ensemble in **eight**.
 

@@ -66,16 +66,13 @@ def _peak_kw(trajectory) -> float:
     return float((jnp.abs(trajectory.meter_kwh.sum(-1)) / 0.25).max())
 
 
-def test_the_default_feeder_is_the_real_urban_one() -> None:
-    """ewz's own network, unmodified. Stiff, meshed, and not voltage-limited.
-
-    The variants exist so a submission can ask which constraint binds where;
-    IEC 60725's reference LV impedance (0.4 + j0.25 ohm, magnitude 0.47) is
-    the suburban anchor.
-    """
-    assert end_of_line_impedance_ohm() < 0.2
+def test_the_default_feeder_is_the_rural_one() -> None:
+    """The hackathon runs where a household can actually read its own
+    congestion. IEC 60725's reference LV impedance (0.4 + j0.25 ohm,
+    magnitude 0.47) anchors the suburban variant in between."""
+    assert end_of_line_impedance_ohm() > 0.8
     assert 0.4 < end_of_line_impedance_ohm(FEEDER_STRENGTHS["suburban"]) < 0.55
-    assert end_of_line_impedance_ohm(FEEDER_STRENGTHS["rural"]) > 0.8
+    assert end_of_line_impedance_ohm(FEEDER_STRENGTHS["urban"]) < 0.2
 
 
 def test_the_population_is_mixed_and_six_households_cannot_respond(population) -> None:
@@ -109,22 +106,37 @@ def test_the_flexible_households_sit_at_the_far_end(population) -> None:
     assert min(ranks) > max(near)
 
 
-def test_the_urban_feeder_is_stressed_by_reverse_flow_not_voltage(env, population) -> None:
-    """THE acceptance test, and it is not about voltage.
+def test_the_reference_scenario_is_stressed_in_both_ways(env, population) -> None:
+    """THE acceptance test. Two constraints have to bite, not one.
 
-    On a meshed urban feeder voltage never leaves the band -- meshing buys
-    stiffness. It buys no thermal capacity, and what this population does is
-    run the transformer backwards at three times its forward peak for most of
-    the daylight half of the week. Urban transformers, their protection and
-    their thermal models were largely specified for one direction.
+    Voltage, so the household seam has something local to read at all -- on
+    the urban feeder the neighbourhood-only content of a voltage measurement
+    is below meter resolution, which leaves a controller reading a noisy
+    clock. And reverse flow, because that is what actually constrains a real
+    distribution network: the transformer runs backwards at several times its
+    forward peak for most of the daylight half of the week, and urban
+    transformers, their protection and their thermal models were largely
+    specified for one direction.
     """
     trajectory = rollout(base_controller(), population, jax.random.PRNGKey(0), WEEK, env=env)
     result = score(trajectory, population)
 
     assert bool(jnp.all(trajectory.valid)), "power flow must converge everywhere"
-    assert result.over_voltage_share == 0.0, "urban feeder should not be voltage limited"
+    assert result.over_voltage_share > 0.05
     assert result.reverse_flow_share > 0.30
     assert result.transformer_export_peak_kw > 3.0 * result.transformer_draw_peak_kw
+
+
+def test_the_urban_variant_is_not_voltage_limited(population) -> None:
+    """ewz's own network, and the finding worth keeping. Meshing buys voltage
+    stiffness and no thermal capacity, so the same population that breaches
+    1.05 pu on a long feeder never leaves the band on a dense city one."""
+    env = build_env(population, time_limit=WEEK, impedance_scale=FEEDER_STRENGTHS["urban"])
+    trajectory = rollout(base_controller(), population, jax.random.PRNGKey(0), WEEK, env=env)
+
+    result = score(trajectory, population)
+    assert result.over_voltage_share == 0.0
+    assert result.reverse_flow_share > 0.30, "still constrained, just not by voltage"
 
 
 def test_the_naive_controller_makes_the_ramp_dramatically_worse(env, population) -> None:
@@ -185,16 +197,6 @@ def test_diversity_is_measured_independently_of_the_wiring(population) -> None:
     assert max(factors) - min(factors) < 0.01
 
 
-def test_over_voltage_appears_on_the_rural_variant(population) -> None:
-    """The variant that exists so over-voltage can be studied at all. On a long
-    feeder the same population does breach the planning trigger."""
-    env = build_env(population, time_limit=WEEK, impedance_scale=FEEDER_STRENGTHS["rural"])
-    trajectory = rollout(base_controller(), population, jax.random.PRNGKey(0), WEEK, env=env)
-
-    assert float(trajectory.voltage_pu.max()) > OVER_VOLTAGE_PU
-    assert _over_voltage_fraction(trajectory) > 0.005
-
-
 def test_violations_can_be_removed_but_not_for_free(env, population) -> None:
     """There has to be a frontier, or the challenge is a one-liner.
 
@@ -220,12 +222,13 @@ def test_violations_can_be_removed_but_not_for_free(env, population) -> None:
     naive = rollout(base_controller(), population, jax.random.PRNGKey(0), WEEK, env=env)
     capped = rollout(blunt, population, jax.random.PRNGKey(0), WEEK, env=env)
 
-    assert (
-        score(capped, population).transformer_export_peak_kw
-        < 0.7 * score(naive, population).transformer_export_peak_kw
-    )
-    assert score(naive, population).curtailed_share < 0.01
-    assert score(capped, population).curtailed_share > 0.05
+    naive_score, capped_score = score(naive, population), score(capped, population)
+    assert capped_score.transformer_export_peak_kw < 0.7 * naive_score.transformer_export_peak_kw
+    # The baseline already clips a little: DC/AC is 1.2, which is what real
+    # installations run. What matters is that buying a flat feeder bluntly
+    # costs several times that.
+    assert naive_score.curtailed_share < 0.05
+    assert capped_score.curtailed_share > 3.0 * naive_score.curtailed_share
 
 
 def test_tenants_are_settled_even_though_they_have_no_agent(env, population) -> None:
@@ -260,7 +263,10 @@ def test_household_sizing_stays_recognisable() -> None:
     about anything."""
     for household in REFERENCE_POPULATION:
         if household.pv_kwp:
-            assert 5.0 <= household.pv_kwp <= 12.0, household.name
+            assert 8.0 <= household.pv_kwp <= 16.0, household.name
+            # DC/AC near 1.2: real installs oversize the array, and sizing the
+            # inverter to the roof was measured to collapse control authority.
+            assert 1.0 < household.pv_kwp / household.s_inv_max_kva < 1.35, household.name
         if household.battery_kwh:
             assert 10.0 <= household.battery_kwh <= 25.0, household.name
         assert 8.0 <= household.daily_consumption_kwh <= 35.0, household.name

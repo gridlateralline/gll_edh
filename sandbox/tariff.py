@@ -248,3 +248,18 @@ class MyTariff(CausalReward):
 def my_tariff(prosumer: ProsumerDynamics) -> MyTariff:
     """Your tariff, with its starting parameters."""
     return MyTariff(prosumer, headroom_kwh=3.0, price_chf_per_kwh=1.00)
+
+
+def tariff_from_charge(charge_fn, params: dict):
+    """Turn a plain ``charge(net_kwh, params) -> (num_pq,) CHF`` into a tariff.
+
+    So a participant writes one pure function over one array instead of
+    subclassing anything. Returns a factory, which is what
+    :func:`sandbox.rollout.build_env` takes.
+    """
+
+    class _FromCharge(MyTariff):
+        def congestion_charge(self, e_pq_kwh: chex.Array) -> chex.Array:
+            return charge_fn(e_pq_kwh, params)
+
+    return lambda prosumer: _FromCharge(prosumer)

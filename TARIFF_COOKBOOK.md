@@ -265,12 +265,18 @@ tariff nobody responds to has changed nothing physical. What differs is
 the one you wrote.
 
 That distinction matters because you are only ever the leader. ewz publishes
-a tariff; households then run whatever they like, and what they like is
-whatever serves their own bill. You cannot put a controller in anyone's
-basement — you can only make one worth building. So the left cell is what
-your price achieves as published, and the gap to the right one, the
-**co-design premium**, is the part still waiting on somebody to supply the
-controller your design implies.
+a tariff; households then run whatever serves their own bill. You cannot put
+a controller in anyone's basement — you can only make one worth building. So
+when you submit a controller alongside a tariff, you are not shipping
+firmware: you are stating what you believe the household's best response to
+your price turns out to be, and the right-hand cell scores your tariff
+against it. That is the Stackelberg evaluation proper — the leader's payoff
+at the follower's best response.
+
+The left cell is the same question asked of the installed base, which can only
+best-respond within the strategy it already implements. The gap, the
+**co-design premium**, is how much of your result needs the market to supply
+the controller your price is designed to make worth building.
 
 ## Scale, and why nothing happened
 

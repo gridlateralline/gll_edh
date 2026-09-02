@@ -15,29 +15,33 @@
 
 """Scoring a submission: four rollouts, not one.
 
-ewz can release a tariff. It cannot install a controller: households run
-whatever they choose, in their own interest rather than the network's. So a
-result that holds with the controllers households already run is one the
-tariff causes by itself, while a result that needs households to also adopt
-the controller you wrote is waiting on an adoption a price can invite and
-never require. Both are worth having; the score should say which one you
-built.
+ewz publishes a tariff; it does not choose anybody's controller. Households
+do that, in their own interest -- so if the price is any good, the controller
+that serves their interest is the one the submission proposes. A submitted
+controller is a claim about the follower's best response, not a product to be
+installed.
 
-Four cells separate them, at the cost of one extra pair of rollouts:
+Both cells under a submitted tariff therefore best-respond to it. They differ
+in what they may best-respond *with*: the strategy households run today, or
+the strategy the submission proposes. A household cannot best-respond into a
+strategy its firmware cannot express, which makes the first the short-run
+answer and the second the equilibrium the price is steering toward.
+
+Four cells, at the cost of one extra pair of rollouts:
 
 ===================== ===================== ==========================
                       today's controller    your controller
 ===================== ===================== ==========================
 **fair LEG**          reference floor       does yours help *today*?
-**your tariff**       does the price alone  your combination
-                      do it?
+**your tariff**       the short run: the    the equilibrium: your
+                      installed base        price at its best response
 ===================== ===================== ==========================
 
 The gap between the two bottom cells is the **co-design premium**: how much of
-your result is waiting on households adopting a controller shaped like yours.
-Reported, not gated -- a large premium is not an attack, it means the
-mechanism needs a second thing to happen before it pays off, and that is a
-judgement for the jury rather than a threshold.
+the result waits on controllers of the proposed shape existing at all.
+Reported, not gated -- it measures how far the market has to move before the
+mechanism pays in full, which is a judgement for the jury rather than a
+threshold.
 
 Every cell involving a submitted tariff re-tunes its controller first, the
 bottom-left one included. That is not a control to be corrected for: the

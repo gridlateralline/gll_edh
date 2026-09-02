@@ -207,7 +207,7 @@ Four rollouts, not one:
 |  | today's controller | your controller |
 |---|---|---|
 | **fair LEG** | reference floor | does yours help *today*? |
-| **your tariff** | does the price alone do it? | your combination |
+| **your tariff** | the short run: the installed base | the equilibrium: your price at its best response |
 
 **Tailoring a controller to your tariff is the point, not a trick.** Every cell
 involving a submitted tariff **re-tunes** the controller first, because without
@@ -217,24 +217,26 @@ own bill*, never the grid score: the gap between what a household wants and
 what the network needs is the mechanism design problem, and closing it is what
 designing a tariff means.
 
-What the four cells separate is a question about *reach*. ewz can release a
-tariff. It cannot install a controller — households run whatever they choose,
-and they choose it in their own interest, not yours. Both bottom cells
-best-respond to your price, because that self-interested response is the
-follower move the whole game is built on; the left one does it with the
-controller households run **today**, which makes it the result your tariff can
-actually cause on its own.
+What the four cells separate is *when*. ewz publishes a tariff; it does not
+choose anybody's controller. Households do that, in their own interest — and
+if your price is any good, the controller that serves their interest is the
+one you submitted. That is what a best response *is*, and it is why the
+controller pathway sits beside the tariff rather than under it: your
+controller is your claim about what households will end up running once your
+price is in force.
 
-The right-hand cell adds an assumption you do not control: that households
-also adopt a controller shaped like the one you wrote. That is not fantasy —
-it is what happens if the market supplies such a product, or an aggregator
-does — but a tariff can only *invite* it, never require it. The gap between
-the two is the **co-design premium**, and it says how much of your headline
-number is waiting on that adoption.
+So both bottom cells best-respond to your tariff. What differs is what they
+are allowed to best-respond *with*. The left one tunes the control strategy
+households run today; the right one tunes yours. A household cannot
+best-respond into a strategy its firmware cannot express — today's batteries
+ship self-consumption logic and not much else — so the left cell is the
+short-run answer, what your price extracts from the installed base, and the
+right cell is the equilibrium it is steering toward once controllers of the
+shape you propose exist.
 
-Reported, not gated. A large premium is not cheating; it means your mechanism
-needs a second thing to happen before it pays off, and a jury deserves to see
-that rather than have it averaged away.
+The gap between them is the **co-design premium**. Reported, not gated: it is
+not a penalty but a statement of how far the market has to move before your
+mechanism pays in full.
 
 The jury is [`sandbox/metrics.py`](sandbox/metrics.py), fixed and not editable:
 

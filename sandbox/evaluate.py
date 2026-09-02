@@ -15,29 +15,34 @@
 
 """Scoring a submission: four rollouts, not one.
 
-A team can co-design a tariff and a controller that flatter each other and
-work for nobody else. The jury's gates catch the crude attacks -- a tariff
-that simply pays everyone dies on revenue adequacy, one so punitive nobody
-moves lands on the do-nothing anchor -- but not that one.
+A submission is two designs, and they are deployable in different ways. A
+tariff that works on the controllers households already run is a pricing
+change ewz could ship on its own. One that only works when every household
+also installs the controller you wrote is a pricing change *plus* a firmware
+rollout. Both are legitimate results; the score should say which one you
+built.
 
-Four cells catch it, at the cost of one extra pair of rollouts:
+Four cells separate them, at the cost of one extra pair of rollouts:
 
 ===================== ===================== ==========================
-                      base controller       your controller
+                      today's controller    your controller
 ===================== ===================== ==========================
 **fair LEG**          reference floor       does yours help *today*?
-**your tariff**       does yours help a     your combination
-                      *naive* household?
+**your tariff**       does the price alone  your combination
+                      do it?
 ===================== ===================== ==========================
 
-The gap between your combination and "your tariff with a naive household" is
-the **co-design premium**: how much of your result depends on the households
-running precisely the controller you shipped. It is reported, not gated --
-that is a judgement for the jury, not a threshold.
+The gap between the two bottom cells is the **co-design premium**: how much of
+your result depends on households running precisely the controller you
+shipped. Reported, not gated -- which of the two a jury prefers is a
+judgement, not a threshold.
 
-Every cell that involves a submitted tariff re-tunes its controller first.
-Without that, a tariff changes nothing physical whatsoever and the row is
-measuring redistribution alone.
+Every cell involving a submitted tariff re-tunes its controller first, the
+bottom-left one included. That is not a control to be corrected for: the
+household's best response *is* the follower move the Stackelberg game is built
+on. Without it a tariff changes nothing physical whatsoever, because nobody
+can see a price during an episode, and the row would measure redistribution
+alone.
 """
 
 from dataclasses import dataclass

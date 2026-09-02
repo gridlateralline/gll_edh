@@ -36,12 +36,12 @@ Edit it in place in [`sandbox/my_idea.py`](sandbox/my_idea.py); `check()` and
 parameters across episodes instead — that is what "anticipate it" means.
 
 **And do not over-trust voltage.** It tracks congestion almost perfectly, but
-82% of it is already implied by your own PV, your own load and the clock. What
-is left — the part genuinely about your neighbourhood — is 0.68% of nominal on
-the default `rural` feeder, which sits just above the ~0.5% a Class 1 smart
-meter resolves and is worth using. On `urban` it is 0.13%, roughly four times
-*below* meter resolution: a voltage threshold there is an expensive way to read
-a clock. Check which feeder you are on before building a rule around it.
+roughly 90% of it is already implied by your own PV, your own load and the
+clock. What is left — the part genuinely about your neighbourhood — is 0.86% of
+nominal on the default `rural` feeder, which sits just above the ~0.5% a Class
+1 smart meter resolves and is worth using. On `urban` it is 0.20%, well *below*
+meter resolution: a voltage threshold there is an expensive way to read a
+clock. Check which feeder you are on before building a rule around it.
 
 `p_min_kw` / `p_max_kw` already fold in your inverter rating, your grid
 connection, your battery's state and the reactive power Q(U) committed on your

@@ -113,15 +113,19 @@ FEEDER_STRENGTHS: dict[str, float] = {
 #: The hackathon runs on ``rural``, and the reason is the household seam.
 #:
 #: On ``urban`` a household has essentially nothing to read: own bus voltage
-#: correlates with congestion at +0.99, but 82 % of it is already implied by
-#: that household's own PV, own load and the clock, leaving a residual of
-#: 0.13 % of nominal -- about four times below what a Class 1 meter resolves.
+#: correlates with congestion at +0.99, but roughly 90 % of it is already
+#: implied by that household's own PV, own load and the clock, leaving a
+#: residual of 0.20 % of nominal -- well below what a Class 1 meter resolves.
 #: A controller "reading voltage" there is reading a noisy clock.
 #:
-#: ``rural`` lifts that residual to 0.88 %, comfortably measurable, and takes
-#: over-voltage from never to 11.6 % of bus-intervals. Turning the grid code
-#: off instead was measured and does almost nothing: Q(U) only acts outside
-#: its deadband, and on a stiff feeder voltage never gets there.
+#: ``rural`` lifts that residual to 0.86 %, comfortably measurable, and takes
+#: over-voltage from never to about 9 % of bus-intervals. Turning the grid
+#: code off instead was measured and does almost nothing: Q(U) only acts
+#: outside its deadband, and on a stiff feeder voltage never gets there.
+#:
+#: The residuals come from ``scripts/measure_voltage_residual.py``; re-run it
+#: rather than editing them here, and update the table in
+#: :mod:`sandbox.observation` in the same breath.
 #:
 #: ``urban`` remains available and remains the truthful model of ewz's own
 #: meshed network, where over-voltage is not the constraint and reverse flow

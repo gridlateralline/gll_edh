@@ -256,12 +256,15 @@ knowing nothing of your intent. You are the *leader*; `tune()` computes the
 the way `TUNE_OVER` searches a controller's — doing so would hand the
 leader's move to another optimiser and remove the actual mechanism-design
 question, which is the gap between what your tariff *intends* and what a
-rational household *does* with it. The scorer's four cells
-([`sandbox/evaluate.py`](sandbox/evaluate.py)) are exactly this game played
-out: reference-leader/reference-follower, your-leader/naive-follower, and
-your-leader/best-responding-follower. The last two apart is the "co-design
-premium" — how much of your result needs the household to be running
-precisely the response you designed for, rather than something naive.
+rational household *does* with it.
+
+Both bottom cells of the scorer ([`sandbox/evaluate.py`](sandbox/evaluate.py))
+best-respond to your tariff — the follower move is never skipped, because a
+tariff nobody responds to has changed nothing physical. What differs is
+*which* controller is doing the responding: today's stock one, or the one you
+shipped. The gap is the **co-design premium**, and it says whether you have
+designed a price ewz could deploy on its own or a price that also needs your
+firmware in every home. Both are real answers; they are just different ones.
 
 ## Scale, and why nothing happened
 

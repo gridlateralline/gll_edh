@@ -105,12 +105,12 @@ across episodes.
 Own bus voltage correlates with feeder congestion at **+0.99**, so it looks
 like the obvious proxy for a nodal price. Then measure how much of it a
 household did not already know: regress it on own PV, own load and the clock
-and **82% is already explained**. The residual — the part genuinely about the
-neighbourhood — is **0.68% of nominal** on the default feeder, just above what
-a Class 1 smart meter resolves. It is why the sandbox runs on `rural`: on
-ewz's own `urban` network that residual is 0.13%, roughly four times *below*
+and roughly **90% is already explained**. The residual — the part genuinely
+about the neighbourhood — is **0.86% of nominal** on the default feeder, just
+above what a Class 1 smart meter resolves. It is why the sandbox runs on
+`rural`: on ewz's own `urban` network that residual is 0.20%, well *below*
 meter resolution, and a controller "reading voltage" there is reading a noisy
-clock.
+clock. (`scripts/measure_voltage_residual.py` regenerates all of these.)
 
 That is the real finding here, and it explains *why* herding is hard rather
 than just that it happens. Every local signal is correlated across the feeder,
@@ -204,21 +204,28 @@ redistributes is not. Full reference: [`TARIFF_COOKBOOK.md`](TARIFF_COOKBOOK.md)
 
 Four rollouts, not one:
 
-|  | base controller | your controller |
+|  | today's controller | your controller |
 |---|---|---|
 | **fair LEG** | reference floor | does yours help *today*? |
-| **your tariff** | does yours help a *naive* household? | your combination |
+| **your tariff** | does the price alone do it? | your combination |
 
-The gap between the last two is the **co-design premium** — how much of your
-result needs households to be running precisely the controller you shipped.
-Reported, not gated.
+**Tailoring a controller to your tariff is the point, not a trick.** Every cell
+involving a submitted tariff **re-tunes** the controller first, because without
+that a tariff changes nothing physical at all — nobody can see it during an
+episode, so it would only redistribute. The tuner maximises the *household's
+own bill*, never the grid score: the gap between what a household wants and
+what the network needs is the mechanism design problem, and closing it is what
+designing a tariff means.
 
-Every cell involving a submitted tariff **re-tunes** the controller first.
-Without that a tariff changes nothing physical at all, because nobody can see
-it during an episode; it would only redistribute. The tuner maximises the
-*household's own bill*, never the grid score — the gap between what a household
-wants and what the network needs is the mechanism design problem, and closing
-it is what designing a tariff means.
+What the four cells separate is two different claims, both legitimate. A
+household best-responding to your price is the follower move the whole game is
+built on, and it happens in *both* bottom cells — the left one is today's stock
+controller re-tuned under your tariff, not a naive one. Shipping your **own**
+controller is a further claim: that the population runs your firmware. The gap
+between the two bottom cells is the **co-design premium**, and it measures how
+much of your result rests on that. Reported, not gated — a mechanism that works
+on stock households and one that needs new firmware are both interesting, they
+are just deployable in different ways.
 
 The jury is [`sandbox/metrics.py`](sandbox/metrics.py), fixed and not editable:
 
@@ -236,6 +243,31 @@ The jury is [`sandbox/metrics.py`](sandbox/metrics.py), fixed and not editable:
 One hard gate: **revenue adequacy**. A tariff that simply pays everybody
 produces a delighted population and a bankrupt network operator, so it is
 disqualified rather than ranked.
+
+## Handing it in
+
+Fork this repository, work in your fork, and open a pull request back here when
+you are done. You do not need to be given access to anything — a fork and a PR
+is the whole process.
+
+```bash
+gh repo fork gridlateralline/gll_edh --clone     # or use the Fork button
+```
+
+Work on a branch, commit `sandbox/my_idea.py` along with anything else your
+idea needed, and open the PR:
+
+```bash
+git checkout -b our-team-name
+git commit -am "our tariff and controller"
+git push -u origin our-team-name
+gh pr create
+```
+
+In the PR description, say what you tried and what the numbers did — paste the
+`score()` output, and tell us what you expected that did not happen. A
+submission that explains a negative result is worth more than one that only
+shows the run that worked.
 
 ## Which feeder, and why it matters
 
@@ -296,6 +328,9 @@ sandbox/
 ├── metrics.py         the jury           [do not edit]
 ├── evaluate.py        the four cells     [do not edit]
 └── export.py          tidy frames, no JAX needed
+
+scripts/
+└── measure_voltage_residual.py   regenerates the residual table above
 ```
 
 `tariff.py` and `controller.py` are where `my_idea.py`'s two functions actually

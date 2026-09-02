@@ -113,9 +113,9 @@ FEEDER_STRENGTHS: dict[str, float] = {
 #: The hackathon runs on ``rural``, and the reason is the household seam.
 #:
 #: On ``urban`` a household has essentially nothing to read: own bus voltage
-#: correlates with congestion at +0.99, but roughly 90 % of it is already
-#: implied by that household's own PV, own load and the clock, leaving a
-#: residual of 0.20 % of nominal -- well below what a Class 1 meter resolves.
+#: correlates with congestion at +0.99, but 87 % of it is already implied by
+#: that household's own PV, own load and the clock, leaving a residual of
+#: 0.20 % of nominal -- well below what a Class 1 meter resolves.
 #: A controller "reading voltage" there is reading a noisy clock.
 #:
 #: ``rural`` lifts that residual to 0.86 %, comfortably measurable, and takes

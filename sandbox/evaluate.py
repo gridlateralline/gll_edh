@@ -15,11 +15,12 @@
 
 """Scoring a submission: four rollouts, not one.
 
-A submission is two designs, and they are deployable in different ways. A
-tariff that works on the controllers households already run is a pricing
-change ewz could ship on its own. One that only works when every household
-also installs the controller you wrote is a pricing change *plus* a firmware
-rollout. Both are legitimate results; the score should say which one you
+ewz can release a tariff. It cannot install a controller: households run
+whatever they choose, in their own interest rather than the network's. So a
+result that holds with the controllers households already run is one the
+tariff causes by itself, while a result that needs households to also adopt
+the controller you wrote is waiting on an adoption a price can invite and
+never require. Both are worth having; the score should say which one you
 built.
 
 Four cells separate them, at the cost of one extra pair of rollouts:
@@ -33,9 +34,10 @@ Four cells separate them, at the cost of one extra pair of rollouts:
 ===================== ===================== ==========================
 
 The gap between the two bottom cells is the **co-design premium**: how much of
-your result depends on households running precisely the controller you
-shipped. Reported, not gated -- which of the two a jury prefers is a
-judgement, not a threshold.
+your result is waiting on households adopting a controller shaped like yours.
+Reported, not gated -- a large premium is not an attack, it means the
+mechanism needs a second thing to happen before it pays off, and that is a
+judgement for the jury rather than a threshold.
 
 Every cell involving a submitted tariff re-tunes its controller first, the
 bottom-left one included. That is not a control to be corrected for: the

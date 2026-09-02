@@ -217,15 +217,24 @@ own bill*, never the grid score: the gap between what a household wants and
 what the network needs is the mechanism design problem, and closing it is what
 designing a tariff means.
 
-What the four cells separate is two different claims, both legitimate. A
-household best-responding to your price is the follower move the whole game is
-built on, and it happens in *both* bottom cells — the left one is today's stock
-controller re-tuned under your tariff, not a naive one. Shipping your **own**
-controller is a further claim: that the population runs your firmware. The gap
-between the two bottom cells is the **co-design premium**, and it measures how
-much of your result rests on that. Reported, not gated — a mechanism that works
-on stock households and one that needs new firmware are both interesting, they
-are just deployable in different ways.
+What the four cells separate is a question about *reach*. ewz can release a
+tariff. It cannot install a controller — households run whatever they choose,
+and they choose it in their own interest, not yours. Both bottom cells
+best-respond to your price, because that self-interested response is the
+follower move the whole game is built on; the left one does it with the
+controller households run **today**, which makes it the result your tariff can
+actually cause on its own.
+
+The right-hand cell adds an assumption you do not control: that households
+also adopt a controller shaped like the one you wrote. That is not fantasy —
+it is what happens if the market supplies such a product, or an aggregator
+does — but a tariff can only *invite* it, never require it. The gap between
+the two is the **co-design premium**, and it says how much of your headline
+number is waiting on that adoption.
+
+Reported, not gated. A large premium is not cheating; it means your mechanism
+needs a second thing to happen before it pays off, and a jury deserves to see
+that rather than have it averaged away.
 
 The jury is [`sandbox/metrics.py`](sandbox/metrics.py), fixed and not editable:
 

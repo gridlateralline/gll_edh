@@ -261,10 +261,16 @@ rational household *does* with it.
 Both bottom cells of the scorer ([`sandbox/evaluate.py`](sandbox/evaluate.py))
 best-respond to your tariff — the follower move is never skipped, because a
 tariff nobody responds to has changed nothing physical. What differs is
-*which* controller is doing the responding: today's stock one, or the one you
-shipped. The gap is the **co-design premium**, and it says whether you have
-designed a price ewz could deploy on its own or a price that also needs your
-firmware in every home. Both are real answers; they are just different ones.
+*which* controller is doing the responding: the one households run today, or
+the one you wrote.
+
+That distinction matters because you are only ever the leader. ewz publishes
+a tariff; households then run whatever they like, and what they like is
+whatever serves their own bill. You cannot put a controller in anyone's
+basement — you can only make one worth building. So the left cell is what
+your price achieves as published, and the gap to the right one, the
+**co-design premium**, is the part still waiting on somebody to supply the
+controller your design implies.
 
 ## Scale, and why nothing happened
 

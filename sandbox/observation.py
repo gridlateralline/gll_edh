@@ -29,25 +29,28 @@ correlates with feeder export at **+0.99** on every feeder here. So far so
 good.
 
 But measure how much of that a household did not already know. Regress own
-voltage on own PV, own load and the clock, and **82 % of it is already
+voltage on own PV, own load and the clock, and roughly **90 % of it is already
 explained**. What is left -- the part that genuinely describes the
 neighbourhood rather than this roof -- is:
 
 ======== ============= ==================================
 feeder   voltage span  residual after own PV, load, clock
 ======== ============= ==================================
-urban     1.59 %        **0.13 %** of nominal
-suburban  5.16 %        0.41 %
-rural     9.42 %        0.68 %
+urban     2.43 %        **0.20 %** of nominal
+suburban  7.04 %        0.58 %
+rural    12.05 %        0.86 %
 ======== ============= ==================================
 
-A Class 1 meter resolves roughly 0.5 % of nominal. So on the default urban
-feeder the neighbourhood-only content of the voltage signal sits about four
-times *below* what a real meter could see; the same holds for the spread
-between buses at a single instant, 0.18 % on average. A controller reading
-voltage there is reading a noisy restatement of "it is noon and my roof is
-working". It becomes marginal on the suburban feeder and real on the rural
-one.
+Regenerate with ``uv run python scripts/measure_voltage_residual.py``, which
+carries the exact regression these come from. They move whenever the weather
+model, the population or the feeder set does.
+
+A Class 1 meter resolves roughly 0.5 % of nominal. So on ``urban`` the
+neighbourhood-only content of the voltage signal sits well below what a real
+meter could see: a controller reading voltage there is reading a noisy
+restatement of "it is noon and my roof is working". It is marginal on
+``suburban`` and genuinely readable on ``rural``, which is why the hackathon
+runs there.
 
 Which is the deepest thing this sandbox has to say
 --------------------------------------------------

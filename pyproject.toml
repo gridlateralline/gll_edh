@@ -18,9 +18,9 @@ dependencies = [
     "pandas>=2.2",
 ]
 
-# gll_env is not published to PyPI. This pin becomes a released tag before the
-# repo goes public; until then it tracks the branch carrying the reward
-# component. See README, Install.
+# gll_env is not published to PyPI, so it is a git dependency. uv.lock pins it
+# to an exact commit, which is what keeps every participant on identical
+# physics however this branch moves. See README, "Start here".
 [tool.uv.sources]
 gll_env = { git = "https://github.com/gridlateralline/gll_env.git", branch = "main" }
 

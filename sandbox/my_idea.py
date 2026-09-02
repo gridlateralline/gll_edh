@@ -18,14 +18,11 @@
     from sandbox.my_idea import check
     check()
 
-Everything else in ``sandbox/`` is machinery you can ignore -- with one
-exception. Both functions here are naive, working defaults you are meant to
-overwrite, not a ceiling: `my_controller` and `my_tariff` are plain functions
-because that covers most ideas with the least ceremony, but the tariff seam
-underneath (`sandbox/tariff.py`) is a full settlement, not a bolt-on, and
-supports redesigning it far past what fits in a single function -- see
-``TARIFF_COOKBOOK.md`` and ``CONTROLLER_COOKBOOK.md`` when you want more room
-than this file gives you.
+Everything else in ``sandbox/`` is machinery you can ignore. Both functions
+here are naive, working defaults you are meant to overwrite. They are plain
+functions because that covers most ideas with the least ceremony; when you
+want more room than a single function gives you, ``CONTROLLER_COOKBOOK.md``
+and ``TARIFF_COOKBOOK.md`` are the complete reference for each seam.
 """
 
 import jax.numpy as jnp
@@ -107,11 +104,10 @@ TARIFF_PARAMS = {
 def my_tariff(grid, carry, params):
     """What each of the 18 connection points owes for this interval, in CHF.
 
-    This is the WHOLE settlement, not a surcharge on top of one that is
-    already decided -- return the final number each connection point pays or
-    earns. You see the whole feeder, after the fact -- that is what being the
-    network operator means. Everything is a plain array over the 18
-    connection points:
+    Return the final number each connection point pays or earns -- the whole
+    interval's settlement. You see the whole feeder, after the fact; that is
+    what being the network operator means. Everything is a plain array over
+    the 18 connection points:
 
         grid.net_kwh        what each household pushed (+) or drew (-)
         grid.net_kw         the same as a power
@@ -121,9 +117,9 @@ def my_tariff(grid, carry, params):
         grid.losses_kw       what the network itself burned
         grid.hour            0 to 24
         grid.energy_chf      what ewz's real fair-LEG rate would settle this
-                             interval as -- a starting point, not a floor.
-                             Add to it, replace pieces of it, or ignore it
-                             completely and price energy from scratch.
+                             interval as. An input you may build on, take
+                             pieces of, or leave alone and price energy
+                             yourself.
         grid.has_inverter    who can act at all -- a static equipment fact,
                              not a live reading. Use it to say what you mean
                              directly (e.g. an unconditional tenant floor)
@@ -143,19 +139,19 @@ def my_tariff(grid, carry, params):
     tariff that redistributes, or that collects a little more or less than
     fair LEG in aggregate, can still pass. One that hands out cash cannot.
 
-    The default below keeps today's shape -- fair LEG's energy settlement,
-    plus a congestion term shared by whoever is pushing the feeder past
-    `headroom_kwh` -- and rebates the congestion proceeds equally. It works,
-    and it is crude in two ways worth attacking:
+    The default below is fair LEG's energy settlement plus a congestion term
+    shared by whoever is pushing the feeder past `headroom_kwh`, with the
+    congestion proceeds rebated equally. It works, and it is crude in two
+    ways worth attacking:
 
       * It only ever adds to `grid.energy_chf`. A different rate structure
         entirely -- flat, time-of-use, subscription-plus-marginal -- is just
-        a different return value; you do not need `grid.energy_chf` at all.
+        a different return value from this function.
       * Its congestion term is an *aggregate* signal: every household on the
         feeder sees the same number, so a population tuned against it may
-        well synchronise *harder*. A locational price -- see "exposure is
-        not contribution" below before reaching for `grid.voltage_pu` -- is
-        the obvious next step, and nothing here confines it to a surcharge.
+        well synchronise *harder*. A locational price is the obvious next
+        step -- read "exposure is not contribution" below before reaching
+        for `grid.voltage_pu`.
     """
     net_kwh = grid.net_kwh
     aggregate_kwh = jnp.sum(net_kwh)
@@ -220,19 +216,27 @@ def my_tariff(grid, carry, params):
 # ---------------------------------------------------------------------------
 
 
-def check(days: int = 1, detail: bool = False) -> None:
+def check(days: int = 1, detail: bool = False, fast: bool = True) -> None:
     """Run your idea against the reference and print what changed. Seconds.
 
-    Use this while you work. When you are happy, run :func:`score`, which runs
-    a full week over many weathers and is what the jury sees.
+    Use this while you work. Pass ``fast=False`` when something breaks: it
+    trades speed for concrete values, a working ``print`` and a traceback
+    that points at your own line.
+
+    When you are happy, run :func:`score`, which runs a full week over many
+    weathers and is what the jury sees.
     """
     from sandbox.check import run_check
 
-    run_check(days=days, detail=detail)
+    run_check(days=days, detail=detail, fast=fast)
 
 
 def score(detail: bool = True) -> None:
-    """The full evaluation: a week, twenty weathers, the whole jury."""
+    """The full evaluation: a week, twenty weathers, the whole jury.
+
+    Four rollouts with a tuning sweep inside each -- **about two minutes**,
+    not the seconds :func:`check` takes. Nothing has hung.
+    """
     from sandbox.check import run_score
 
     run_score(detail=detail)

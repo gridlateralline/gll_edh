@@ -20,6 +20,7 @@ prints what changed, so nobody has to assemble a Controller, a Submission and
 a tuning grid before seeing a number.
 """
 
+import inspect
 from typing import Optional
 
 import jax
@@ -34,8 +35,15 @@ from sandbox.tariff import tariff_from_settlement
 
 
 def my_controller_as_bundle() -> Controller:
-    """The function in ``my_idea`` packaged the way the harness expects."""
+    """The controller in ``my_idea`` packaged the way the harness expects.
+
+    ``@numpy_controller`` already returns a :class:`Controller`, so the NumPy
+    tier is passed straight through and ``check()`` works on it unchanged.
+    """
     from sandbox import my_idea
+
+    if isinstance(my_idea.my_controller, Controller):
+        return my_idea.my_controller
 
     return Controller(
         name="yours",
@@ -46,14 +54,34 @@ def my_controller_as_bundle() -> Controller:
 
 
 def my_tariff_factory():
-    """The settlement function in ``my_idea``, wrapped as a tariff."""
+    """The settlement function in ``my_idea``, wrapped as a tariff.
+
+    ``@numpy_tariff`` already returns the factory ``build_env`` takes -- one
+    argument, the prosumer model -- where a settlement function takes three
+    (``grid, carry, params``). Telling them apart by arity is what lets the
+    NumPy tier work through ``check()`` like any other.
+    """
     from sandbox import my_idea
 
-    return tariff_from_settlement(my_idea.my_tariff, my_idea.TARIFF_PARAMS)
+    fn = my_idea.my_tariff
+    if len(inspect.signature(fn).parameters) == 1:
+        return fn
+
+    return tariff_from_settlement(fn, my_idea.TARIFF_PARAMS)
 
 
-def run_check(days: int = 1, detail: bool = False, key: Optional[jax.Array] = None) -> None:
-    """Reference versus yours, on one weather. Fast and rough, for iterating."""
+def run_check(
+    days: int = 1,
+    detail: bool = False,
+    key: Optional[jax.Array] = None,
+    fast: bool = True,
+) -> None:
+    """Reference versus yours, on one weather. Fast and rough, for iterating.
+
+    ``fast=False`` runs the eager path: a Python loop instead of ``scan``, so
+    values are concrete, ``print`` works and a traceback points at your own
+    line. Slower, and the first thing to reach for when something breaks.
+    """
     population = reference_scenario()
     steps = days * STEPS_PER_DAY
     key = key if key is not None else jax.random.PRNGKey(0)
@@ -64,7 +92,8 @@ def run_check(days: int = 1, detail: bool = False, key: Optional[jax.Array] = No
         ("yours", my_controller_as_bundle(), my_tariff_factory()),
     ):
         env = build_env(population, time_limit=steps, tariff=tariff)
-        rows[label] = score(rollout(controller, population, key, steps, env=env), population)
+        trajectory = rollout(controller, population, key, steps, env=env, fast=fast)
+        rows[label] = score(trajectory, population)
 
     print(compare(rows, detail=detail))
     _verdict(rows["reference"], rows["yours"])

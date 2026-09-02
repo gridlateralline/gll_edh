@@ -9,34 +9,58 @@ flow, the feasibility projection, the rollout, the scoring.
 
 ## Start here
 
+The one prerequisite is [**uv**](https://docs.astral.sh/uv/getting-started/installation/),
+which fetches the right Python and every dependency for you:
+
 ```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+On Windows, `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`.
+Homebrew, pipx and standalone installers are all on the
+[installation page](https://docs.astral.sh/uv/getting-started/installation/).
+
+Then:
+
+```bash
+git clone https://github.com/gridlateralline/gll_edh.git
+cd gll_edh
 uv sync
 uv run jupyter lab notebooks/00_quickstart.ipynb
 ```
 
-Then open **[`sandbox/my_idea.py`](sandbox/my_idea.py)**. It holds two
-functions — a household controller and a grid tariff — and is the only file
-you need to touch to get started. Both are naive, working defaults you are
-meant to overwrite: `my_controller` covers most controller ideas as-is, and
-`my_tariff` is a full settlement, not a bolt-on charge, so it has just as much
-room to grow. When you outgrow the plain function, the
-[controller](CONTROLLER_COOKBOOK.md) and [tariff](TARIFF_COOKBOOK.md)
-cookbooks cover what's underneath.
+`uv sync` builds the environment and pulls in `gll_env` — the simulator
+underneath — as a git dependency that `uv.lock` pins to an exact commit, so
+everyone runs identical physics however that repository moves during the event.
 
-**You never need to read the simulator.** `gll_env` runs the power flow
-underneath, and both seams are given plain SI views of it — `obs` for one
-household, `grid` for the whole feeder — so neither function ever mentions an
-environment type, a per-unit conversion, or a bus index. One repository,
-one file to start, two references when you need them.
+Now open **[`sandbox/my_idea.py`](sandbox/my_idea.py)**: two plain functions, a
+household controller and a grid tariff, and the only file you need to touch.
+Both ship as naive but working defaults, meant to be overwritten. Iterate from
+the notebook or any Python prompt:
 
 ```python
 from sandbox.my_idea import check, score
 
-check()     # ~3 s: your idea vs the reference, on one day
-score()     # the real thing: a full week, twenty weathers, the whole jury
+check()               # seconds: your idea vs the reference, on one day
+check(fast=False)     # slower, but concrete values and a working `print`
+score()               # ~2 min: a full week, twenty weathers, the whole jury
 ```
 
-Edit, `check()`, repeat. Everything below is context you can read later.
+Edit, `check()`, repeat — and reach for `check(fast=False)` the moment
+something breaks, because it drops the compilation and puts your own line in
+the traceback. `score()` runs four rollouts with a tuning sweep inside each, so
+give it a couple of minutes; it has not hung.
+
+When a single function stops being enough room, the
+[controller](CONTROLLER_COOKBOOK.md) and [tariff](TARIFF_COOKBOOK.md) cookbooks
+are the complete reference for each seam.
+
+**You never need to read the simulator.** Both seams are handed plain SI views
+of it — `obs` for one household, `grid` for the whole feeder — so neither
+function ever mentions an environment type, a per-unit conversion or a bus
+index.
+
+Everything below is context you can read later.
 
 ---
 
@@ -81,12 +105,12 @@ across episodes.
 Own bus voltage correlates with feeder congestion at **+0.99**, so it looks
 like the obvious proxy for a nodal price. Then measure how much of it a
 household did not already know: regress it on own PV, own load and the clock
-and **82% is already explained**. The residual — the part genuinely about the
-neighbourhood — is **0.88% of nominal** on the default feeder, comfortably
+and roughly **90% is already explained**. The residual — the part genuinely
+about the neighbourhood — is **0.86% of nominal** on the default feeder, just
 above what a Class 1 smart meter resolves. It is why the sandbox runs on
-`rural`: on ewz's own `urban` network that residual is 0.13%, roughly four
-times *below* meter resolution, and a controller "reading voltage" there is
-reading a noisy clock.
+`rural`: on ewz's own `urban` network that residual is 0.20%, well *below*
+meter resolution, and a controller "reading voltage" there is reading a noisy
+clock. (`scripts/measure_voltage_residual.py` regenerates all of these.)
 
 That is the real finding here, and it explains *why* herding is hard rather
 than just that it happens. Every local signal is correlated across the feeder,
@@ -107,18 +131,17 @@ to index. vmap is the fairness contract, not just a speed trick.
 ## Four pathways
 
 1. **Design the price** — edit `my_tariff` in [`sandbox/my_idea.py`](sandbox/my_idea.py).
-   Not confined to a surcharge on top of fair LEG — see
-   [`TARIFF_COOKBOOK.md`](TARIFF_COOKBOOK.md) for how far it goes.
+   What you return is the interval's whole settlement; see
+   [`TARIFF_COOKBOOK.md`](TARIFF_COOKBOOK.md) for how far that goes.
 2. **Design the household** — edit `my_controller` in
    [`sandbox/my_idea.py`](sandbox/my_idea.py). See
    [`CONTROLLER_COOKBOOK.md`](CONTROLLER_COOKBOOK.md).
 3. **Audit it** — `sandbox.export.to_dataframe()` gives you a tidy pandas frame. No JAX required.
 4. **Show it** — same frame; the feeder has coordinates for a map.
 
-Pathways 1 and 2 are equally central — a submission may touch either, both, or
-neither and fall back to the reference. Neither is the "simple" one: the
-controller pathology is what makes the challenge exist, the tariff is what
-closes it.
+The two design pathways are equally central, and a submission may touch either,
+both, or neither and fall back to the reference. The controller pathology is
+what makes the challenge exist; the tariff is what closes it.
 
 ## Writing a controller
 
@@ -146,9 +169,10 @@ the easiest mistake here to make.
 | **numpy** | [`@numpy_controller`](sandbox/numpy_bridge.py) | real `if`, real loops, real SciPy | 1.4× slower |
 | **jax** | plain `jnp` | instant seed sweeps | — |
 
-The rollout cannot tell them apart. Write it eager, keep it in NumPy if you
-like, and score it either way — the results are identical, and there is a test
-asserting that.
+The rollout cannot tell them apart, and neither can `check()` or `score()`.
+Write it eager, keep it in NumPy if you like, and score it either way — the
+results are identical, and there is a test asserting that. The same three tiers
+are open to a tariff.
 
 ## Writing a tariff
 
@@ -158,40 +182,61 @@ def my_tariff(grid, carry, params):
     return grid.energy_chf - my_congestion_term(grid, params), carry
 ```
 
-This is the whole settlement, not a term added to a decision someone else
-already made. `grid.energy_chf` — fair LEG's own number for the interval — is
-offered as a starting point; use it, adjust it, or ignore it and price the
-interval from scratch. `grid.has_inverter` is static rate-class metadata, not
-a live reading, for saying what you mean directly (a tenant floor) instead of
-inferring it from behaviour. `carry` is threaded to the next interval,
-exactly like a controller's — a demand charge's running peak, a ratchet, or a
-*smoothed* congestion signal instead of an instantaneous one all live there.
-Two things checked automatically, not by hand: `settlement_chf` must be
-shaped `(num_pq,)`, and revenue adequacy is gated empirically against what
-fair LEG itself collects — a tariff that pays everybody is disqualified, one
-that redistributes is not. There's a NumPy tier too (`@numpy_tariff`, even
-simpler than the controller's since there's no agent axis to fake under
-`vmap`). Full reference: [`TARIFF_COOKBOOK.md`](TARIFF_COOKBOOK.md).
+What you return **is** what each of the eighteen connection points pays or
+earns for the interval. `grid.energy_chf` is one of the fields you are handed —
+what ewz's published fair-LEG rate would have settled — and the default builds
+on it, but a flat rate, a time-of-use schedule, a demand charge or a fully
+nodal price written from scratch are all just different return values from the
+same function.
+
+`grid.has_inverter` is static rate-class metadata rather than a live reading,
+so a tariff can say what it means directly — a tenant floor — instead of
+inferring identity from behaviour. `carry` threads to the next interval,
+exactly like a controller's: a demand charge's running peak, a ratchet, or a
+*smoothed* congestion signal all live there.
+
+Two things are checked for you rather than by hand: `settlement_chf` must be
+shaped `(num_pq,)`, and revenue adequacy is gated empirically against what fair
+LEG itself collects — a tariff that pays everybody is disqualified, one that
+redistributes is not. Full reference: [`TARIFF_COOKBOOK.md`](TARIFF_COOKBOOK.md).
 
 ## Scoring
 
 Four rollouts, not one:
 
-|  | base controller | your controller |
+|  | today's controller | your controller |
 |---|---|---|
 | **fair LEG** | reference floor | does yours help *today*? |
-| **your tariff** | does yours help a *naive* household? | your combination |
+| **your tariff** | the short run: the installed base | the equilibrium: your price at its best response |
 
-The gap between the last two is the **co-design premium** — how much of your
-result needs households to be running precisely the controller you shipped.
-Reported, not gated.
+**Tailoring a controller to your tariff is the point, not a trick.** Every cell
+involving a submitted tariff **re-tunes** the controller first, because without
+that a tariff changes nothing physical at all — nobody can see it during an
+episode, so it would only redistribute. The tuner maximises the *household's
+own bill*, never the grid score: the gap between what a household wants and
+what the network needs is the mechanism design problem, and closing it is what
+designing a tariff means.
 
-Every cell involving a submitted tariff **re-tunes** the controller first.
-Without that a tariff changes nothing physical at all, because nobody can see
-it during an episode; it would only redistribute. The tuner maximises the
-*household's own bill*, never the grid score — the gap between what a household
-wants and what the network needs is the mechanism design problem, and closing
-it is what designing a tariff means.
+What the four cells separate is *when*. ewz publishes a tariff; it does not
+choose anybody's controller. Households do that, in their own interest — and
+if your price is any good, the controller that serves their interest is the
+one you submitted. That is what a best response *is*, and it is why the
+controller pathway sits beside the tariff rather than under it: your
+controller is your claim about what households will end up running once your
+price is in force.
+
+So both bottom cells best-respond to your tariff. What differs is what they
+are allowed to best-respond *with*. The left one tunes the control strategy
+households run today; the right one tunes yours. A household cannot
+best-respond into a strategy its firmware cannot express — today's batteries
+ship self-consumption logic and not much else — so the left cell is the
+short-run answer, what your price extracts from the installed base, and the
+right cell is the equilibrium it is steering toward once controllers of the
+shape you propose exist.
+
+The gap between them is the **co-design premium**. Reported, not gated: it is
+not a penalty but a statement of how far the market has to move before your
+mechanism pays in full.
 
 The jury is [`sandbox/metrics.py`](sandbox/metrics.py), fixed and not editable:
 
@@ -210,21 +255,48 @@ One hard gate: **revenue adequacy**. A tariff that simply pays everybody
 produces a delighted population and a bankrupt network operator, so it is
 disqualified rather than ranked.
 
+## Handing it in
+
+Fork this repository, work in your fork, and open a pull request back here when
+you are done. You do not need to be given access to anything — a fork and a PR
+is the whole process.
+
+```bash
+gh repo fork gridlateralline/gll_edh --clone     # or use the Fork button
+```
+
+Work on a branch, commit `sandbox/my_idea.py` along with anything else your
+idea needed, and open the PR:
+
+```bash
+git checkout -b our-team-name
+git commit -am "our tariff and controller"
+git push -u origin our-team-name
+gh pr create
+```
+
+In the PR description, say what you tried and what the numbers did — paste the
+`score()` output, and tell us what you expected that did not happen. A
+submission that explains a negative result is worth more than one that only
+shows the run that worked.
+
 ## Which feeder, and why it matters
 
 The default is `rural` — a long feeder, end-of-line impedance 0.91 Ω, about
-twice IEC 60725's reference. Voltage breaches the 1.05 pu planning trigger
-around 8% of the week and peaks at 1.10, right at the EN 50160 limit. That is
-a genuine standards violation rather than a modelling artefact, and it is what
-gives a household something local to read.
+twice IEC 60725's reference. Voltage crosses the 1.05 pu planning trigger on
+about 9% of bus-intervals — the `>1.05` column `score()` prints — and peaks at
+1.10, right at the EN 50160 limit. That is a genuine standards violation rather
+than a modelling artefact, and it is what gives a household something local to
+read.
 
 `FEEDER_STRENGTHS` also ships **`urban`** — ewz's own network, unmodified.
-There, over-voltage simply never happens: a dense meshed feeder is stiff.
-Meshing buys voltage stiffness and no thermal capacity, so what binds instead
-is reverse flow at three times the forward peak for 42% of the week, and the
-loss of the diversity the network was planned under. Same population, same
-jury, different binding constraint — and which one bites where is worth a
-submission on its own.
+There over-voltage simply never happens, because a dense meshed feeder is stiff
+and never leaves 1.02. But meshing buys voltage stiffness and no thermal
+capacity, so what binds instead is throughput: the feeder runs backwards for
+47% of the week, its export peak is several times its largest draw, and the
+diversity the network was planned under is gone. Same population, same jury,
+different binding constraint — and which one bites where is worth a submission
+on its own.
 
 Turning the grid code off instead of weakening the feeder was measured and
 does almost nothing: Q(U) only acts outside its deadband, and on a stiff
@@ -251,29 +323,12 @@ its battery.
 
 A full week runs in about **one second**; a 20-seed ensemble in **eight**.
 
-## Install
-
-```bash
-uv sync
-```
-
-`gll_env` — the simulator underneath — is a git dependency, and `uv.lock`
-pins it to an exact commit, so `uv sync` gives everyone the same environment
-however the upstream repository moves during the event. You never need to
-clone or read it.
-
-The repo shares `gll_env`'s pre-commit setup (ruff, `ty`, whitespace, licence
-headers, conventional commits). It is not required to participate:
-
-```bash
-uv run pre-commit install    # optional
-```
-
 ## Layout
 
 ```
 sandbox/
 ├── my_idea.py       ← START HERE (both pathways, plain functions)
+├── check.py           what check() and score() run      [do not edit]
 ├── tariff.py          the tariff seam underneath      [pathway 1, advanced]
 ├── controller.py      the controller seam underneath  [pathway 2, advanced]
 ├── numpy_bridge.py    write your controller or tariff in NumPy instead
@@ -284,12 +339,22 @@ sandbox/
 ├── metrics.py         the jury           [do not edit]
 ├── evaluate.py        the four cells     [do not edit]
 └── export.py          tidy frames, no JAX needed
+
+scripts/
+└── measure_voltage_residual.py   regenerates the residual table above
 ```
 
-`tariff.py` and `controller.py` are where `my_idea.py`'s two functions
-actually get wired in, and where the escape hatches live for anyone who
-outgrows a plain function — a stateful tariff (`MyTariff`), a `@numpy_controller`.
-Most submissions never need to open either.
+`tariff.py` and `controller.py` are where `my_idea.py`'s two functions actually
+get wired in, and where the escape hatches live for anyone who outgrows a plain
+function — a stateful tariff (`MyTariff`), a `@numpy_controller`. Most
+submissions never need to open either.
+
+The repo shares `gll_env`'s pre-commit setup (ruff, `ty`, whitespace, licence
+headers, conventional commits). It is not required to participate:
+
+```bash
+uv run pre-commit install    # optional
+```
 
 ## Licence
 

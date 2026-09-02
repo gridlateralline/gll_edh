@@ -15,29 +15,46 @@
 
 """Scoring a submission: four rollouts, not one.
 
-A team can co-design a tariff and a controller that flatter each other and
-work for nobody else. The jury's gates catch the crude attacks -- a tariff
-that simply pays everyone dies on revenue adequacy, one so punitive nobody
-moves lands on the do-nothing anchor -- but not that one.
+ewz publishes a tariff; it does not choose anybody's controller. Households
+do that, in their own interest -- so if the price is any good, the controller
+that serves their interest is the one the submission proposes. A submitted
+controller is a claim about the follower's best response, not a product to be
+installed.
 
-Four cells catch it, at the cost of one extra pair of rollouts:
+Both cells under a submitted tariff therefore best-respond to it. They differ
+in what they may best-respond *with*: the strategy households run today, or
+the strategy the submission proposes. A household cannot best-respond into a
+strategy its firmware cannot express, which makes the first the short-run
+answer and the second the equilibrium the price is steering toward.
+
+The response is bounded by design. :func:`~sandbox.tuning.tune` searches the
+parameters in ``Submission.candidates`` within the controller of the cell it
+is scoring, not every controller anyone could write. An unconstrained
+follower would leave the two cells sharing no basis for comparison, and the
+premium nothing to measure.
+
+Four cells, at the cost of one extra pair of rollouts:
 
 ===================== ===================== ==========================
-                      base controller       your controller
+                      today's controller    your controller
 ===================== ===================== ==========================
 **fair LEG**          reference floor       does yours help *today*?
-**your tariff**       does yours help a     your combination
-                      *naive* household?
+**your tariff**       the short run: the    the equilibrium: your
+                      installed base        price at its best response
 ===================== ===================== ==========================
 
-The gap between your combination and "your tariff with a naive household" is
-the **co-design premium**: how much of your result depends on the households
-running precisely the controller you shipped. It is reported, not gated --
-that is a judgement for the jury, not a threshold.
+The gap between the two bottom cells is the **co-design premium**: how much of
+the result waits on controllers of the proposed shape existing at all.
+Reported, not gated -- it measures how far the market has to move before the
+mechanism pays in full, which is a judgement for the jury rather than a
+threshold.
 
-Every cell that involves a submitted tariff re-tunes its controller first.
-Without that, a tariff changes nothing physical whatsoever and the row is
-measuring redistribution alone.
+Every cell involving a submitted tariff re-tunes its controller first, the
+bottom-left one included. That is not a control to be corrected for: the
+household's best response *is* the follower move the Stackelberg game is built
+on. Without it a tariff changes nothing physical whatsoever, because nobody
+can see a price during an episode, and the row would measure redistribution
+alone.
 """
 
 from dataclasses import dataclass

@@ -89,6 +89,27 @@ def init_tariff_memory() -> TariffMemory:
     return TariffMemory(intervals=jnp.int32(0))
 
 
+def _assert_settles_every_connection_point(settlement_chf: chex.Array, num_pq: int) -> None:
+    """The first rule, checked where it is broken rather than three frames later.
+
+    Shapes are static at trace time, so this costs nothing at runtime. Without
+    it the failure surfaces from inside ``lax.scan`` as "carry input and carry
+    output must have equal types", which names neither the tariff nor the
+    mistake.
+    """
+    try:
+        chex.assert_shape(settlement_chf, (num_pq,))
+    except AssertionError as mismatch:
+        raise ValueError(
+            f"{mismatch}\n\n"
+            f"A tariff must settle all {num_pq} connection points. Six of them are "
+            "tenants with no inverter and therefore no agent, so a settlement shaped "
+            "like the agents silently drops exactly the households a bad tariff "
+            "harms. Return something shaped like `grid.net_kwh` and this is right "
+            "by construction. See TARIFF_COOKBOOK.md, 'The two rules'."
+        ) from mismatch
+
+
 @chex.dataclass(frozen=True)
 class TariffState(RewardState):
     """What a tariff carries between intervals.
@@ -163,7 +184,7 @@ def base_tariff(prosumer: ProsumerDynamics) -> LegSettlementReward:
 
 
 class MyTariff(CausalReward):
-    """A naive, deliberately flawed starting tariff -- one shape among many.
+    """A naive, deliberately flawed starting tariff.
 
     Out of the box it settles energy exactly as fair LEG does, then adds a
     congestion term driven by the feeder's own aggregate flow. When the whole
@@ -172,8 +193,8 @@ class MyTariff(CausalReward):
     excess is theirs, and the proceeds are rebated equally across all
     eighteen connection points.
 
-    That shape -- "fair LEG plus a surcharge" -- is a convenient default, not
-    a constraint. :meth:`settlement_from_view` is the whole interval's
+    "Fair LEG plus a surcharge" is one shape among many, chosen here because
+    it is short. :meth:`settlement_from_view` returns the whole interval's
     settlement; override it (or hand a plain function to
     :func:`tariff_from_settlement`) to price the interval however you like,
     fair LEG included or not. See ``TARIFF_COOKBOOK.md``.
@@ -243,13 +264,12 @@ class MyTariff(CausalReward):
         """The WHOLE interval's settlement, ``(num_pq,)`` CHF, and the carry
         to bring to the next interval. Override this.
 
-        This is the general seam -- ``grid.energy_chf`` is offered as a
-        starting point, not a floor underneath you. Ignore it entirely for a
-        flat rate, a time-of-use schedule, a locational price built from
-        ``grid.voltage_pu``, or anything else that is a function of one
-        settled interval plus whatever you chose to remember. The default
-        keeps today's shape (fair LEG plus a redistributed surcharge) and
-        passes `carry` through untouched, for continuity, nothing more.
+        This is the general seam. Any function of one settled interval plus
+        whatever you chose to remember can go here: a flat rate, a
+        time-of-use schedule, a locational price built from
+        ``grid.voltage_pu``. ``grid.energy_chf`` is available if fair LEG's
+        energy pricing is a useful place to start. The default builds on it
+        with a redistributed surcharge and passes `carry` through untouched.
         """
         return grid.energy_chf - self.congestion_charge_from_view(grid), carry
 
@@ -295,6 +315,8 @@ class MyTariff(CausalReward):
         settlement_chf, carry = self.settlement_from_view(grid, reward_state.carry)
         settlement_chf = jnp.asarray(settlement_chf, dtype=jnp.float32)
 
+        _assert_settles_every_connection_point(settlement_chf, self._num_pq)
+
         inverter_id = jnp.asarray(dynamics.prosumer.inverter_id, dtype=jnp.int32)
         return (
             TariffState(
@@ -324,11 +346,10 @@ def tariff_from_settlement(
     """Turn a plain ``settlement(grid, carry, params) -> (chf, carry)`` into a tariff.
 
     This is the general pathway: `settlement_fn` returns the WHOLE interval's
-    settlement, not a term added to fair LEG. `grid.energy_chf` carries fair
-    LEG's own number as a starting point you are free to use, adjust, or
-    ignore -- see :class:`GridView`. Nothing here restricts the design to a
-    surcharge; a flat rate, a time-of-use schedule, or a fully nodal price are
-    all just a different `settlement_fn`.
+    settlement. A flat rate, a time-of-use schedule, a fully nodal price, or
+    fair LEG plus a congestion term are all just a different `settlement_fn`.
+    `grid.energy_chf` carries fair LEG's own number for anyone who wants to
+    build on it -- see :class:`GridView`.
 
     A participant writes one pure function over one view instead of
     subclassing anything. `carry` is threaded automatically between
@@ -355,11 +376,10 @@ def tariff_from_settlement(
 def tariff_from_charge(charge_fn, params: dict):
     """Turn a plain ``charge(net_kwh, params) -> (num_pq,) CHF`` into a tariff.
 
-    Narrower than :func:`tariff_from_settlement`: `charge_fn` is added as a
-    surcharge on top of fair LEG's own settlement rather than replacing it.
-    Kept for anyone who wants exactly that shape -- a redistributed
-    congestion term over the existing tariff -- without touching energy
-    pricing at all.
+    Narrower than :func:`tariff_from_settlement`, and a convenience when a
+    redistributed congestion term over the existing tariff is exactly the
+    idea: `charge_fn` is added on top of fair LEG's own settlement, so energy
+    pricing stays as it is and you write only the term you care about.
     """
 
     class _FromCharge(MyTariff):

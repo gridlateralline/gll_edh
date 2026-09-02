@@ -226,6 +226,23 @@ def test_a_tariff_can_replace_the_settlement_entirely(population) -> None:
     assert not bool(jnp.allclose(jnp.sum(trajectory.settlement_chf, axis=-1), 0.0, atol=1e-3))
 
 
+def test_a_tariff_settling_only_the_agents_says_so_in_plain_words(population) -> None:
+    """The first rule a tariff has to respect is the easiest to break: settle
+    `(num_agents,)` and the six tenants vanish. Left to JAX this surfaces from
+    inside `scan` as a carry-type mismatch naming neither the tariff nor the
+    mistake, so the seam raises where the mistake is instead."""
+
+    def settles_only_the_agents(grid, carry, params):
+        del params
+        return jnp.zeros((population.num_agents,)), carry
+
+    tariff = tariff_from_settlement(settles_only_the_agents, {})
+    env = build_env(population, time_limit=DAY, tariff=tariff)
+
+    with pytest.raises(ValueError, match=r"must settle all 18 connection points"):
+        rollout(base_controller(), population, jax.random.PRNGKey(0), DAY, env=env)
+
+
 def test_a_tariff_can_carry_state_across_intervals(population) -> None:
     """The tariff's counterpart to a controller's `carry`: state that a
     demand charge, a ratchet, or a smoothed price actually needs. A custom

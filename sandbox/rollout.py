@@ -142,7 +142,7 @@ def build_model(
     impedance. See :data:`sandbox.scenarios.FEEDER_IMPEDANCE_SCALE`.
 
     `tariff` replaces the reward named in the population's config. It is the
-    tariff seam: pass :func:`sandbox.tariff.my_tariff` to score your own
+    tariff seam: pass :func:`sandbox.tariff.default_tariff` to score your own
     against the same population and jury the base tariff faces.
 
     Everything else comes from the factories unchanged.

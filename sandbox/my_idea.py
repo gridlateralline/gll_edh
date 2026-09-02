@@ -13,14 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""THE ONLY FILE YOU EDIT.
-
-Two functions. Change one or both, then::
+"""THE FAST PATH. Two functions, either or both, then::
 
     from sandbox.my_idea import check
     check()
 
-Everything else in ``sandbox/`` is machinery you can ignore.
+Everything else in ``sandbox/`` is machinery you can ignore -- with one
+exception. Both functions here are naive, working defaults you are meant to
+overwrite, not a ceiling: `my_controller` and `my_tariff` are plain functions
+because that covers most ideas with the least ceremony, but the tariff seam
+underneath (`sandbox/tariff.py`) is a full settlement, not a bolt-on, and
+supports redesigning it far past what fits in a single function -- see
+``TARIFF_COOKBOOK.md`` and ``CONTROLLER_COOKBOOK.md`` when you want more room
+than this file gives you.
 """
 
 import jax.numpy as jnp
@@ -99,14 +104,14 @@ TARIFF_PARAMS = {
 }
 
 
-def my_congestion_charge(grid, params):
+def my_tariff(grid, carry, params):
     """What each of the 18 connection points owes for this interval, in CHF.
 
-    Added on top of ewz's real fair-LEG energy settlement, so you are pricing
-    *congestion*, not electricity.
-
-    You see the whole feeder, after the fact -- that is what being the network
-    operator means. Everything is a plain array over the 18 connection points:
+    This is the WHOLE settlement, not a surcharge on top of one that is
+    already decided -- return the final number each connection point pays or
+    earns. You see the whole feeder, after the fact -- that is what being the
+    network operator means. Everything is a plain array over the 18
+    connection points:
 
         grid.net_kwh        what each household pushed (+) or drew (-)
         grid.net_kw         the same as a power
@@ -115,16 +120,42 @@ def my_congestion_charge(grid, params):
         grid.transformer_kw  throughput at the substation, + = drawing
         grid.losses_kw       what the network itself burned
         grid.hour            0 to 24
+        grid.energy_chf      what ewz's real fair-LEG rate would settle this
+                             interval as -- a starting point, not a floor.
+                             Add to it, replace pieces of it, or ignore it
+                             completely and price energy from scratch.
+        grid.has_inverter    who can act at all -- a static equipment fact,
+                             not a live reading. Use it to say what you mean
+                             directly (e.g. an unconditional tenant floor)
+                             instead of inferring it from behaviour.
 
-    **It must sum to zero.** Money you take off one household you give back to
-    the others. A tariff that simply pays everybody is a subsidy, and the
-    scorer disqualifies it.
+    `carry` is yours, carried to the next interval -- the tariff's
+    counterpart to a controller's memory. The default below doesn't use it
+    for anything beyond counting intervals; it is exactly where a demand
+    charge's running peak, a ratchet, or a *smoothed* (rather than
+    instantaneous) congestion signal would live. See `TariffMemory` in
+    `sandbox/tariff.py` and `TARIFF_COOKBOOK.md`.
 
-    The default charges whoever is pushing the feeder past `headroom_kwh`, in
-    proportion to their share of the excess, and rebates the proceeds equally.
-    It works, and it is crude: every household on the feeder sees the same
-    congestion number, so a population tuned against it may well synchronise
-    *harder*. A better tariff would distinguish *where* the strain is.
+    **It must not print money.** Checked automatically after the fact against
+    what fair LEG itself collects, within a tolerance -- see
+    `revenue_adequate` in `sandbox/metrics.py`. You do not need to enforce
+    this by hand (e.g. by forcing every interval to sum to exactly zero); a
+    tariff that redistributes, or that collects a little more or less than
+    fair LEG in aggregate, can still pass. One that hands out cash cannot.
+
+    The default below keeps today's shape -- fair LEG's energy settlement,
+    plus a congestion term shared by whoever is pushing the feeder past
+    `headroom_kwh` -- and rebates the congestion proceeds equally. It works,
+    and it is crude in two ways worth attacking:
+
+      * It only ever adds to `grid.energy_chf`. A different rate structure
+        entirely -- flat, time-of-use, subscription-plus-marginal -- is just
+        a different return value; you do not need `grid.energy_chf` at all.
+      * Its congestion term is an *aggregate* signal: every household on the
+        feeder sees the same number, so a population tuned against it may
+        well synchronise *harder*. A locational price -- see "exposure is
+        not contribution" below before reaching for `grid.voltage_pu` -- is
+        the obvious next step, and nothing here confines it to a surcharge.
     """
     net_kwh = grid.net_kwh
     aggregate_kwh = jnp.sum(net_kwh)
@@ -137,16 +168,22 @@ def my_congestion_charge(grid, params):
     total = jnp.sum(contribution)
     share = jnp.where(total > 1e-9, contribution / total, 0.0)
 
+    congestion_chf = params["price_chf_per_kwh"] * excess_kwh * share
+    congestion_chf = congestion_chf - jnp.mean(congestion_chf)  # rebate: sums to zero
+    carry = carry.replace(intervals=carry.intervals + 1)
+
     # === YOUR IDEA GOES HERE ===================================================
-    # The default is crude in a specific way: every household on the feeder
-    # sees the same congestion number, so a population tuned against it may
-    # synchronise harder rather than less. Making it locational is the obvious
-    # improvement -- but see "exposure is not contribution" below before
-    # reaching for grid.voltage_pu.
+    # Replace any of this. Some starting points, roughly in order of ambition:
+    #   * change headroom_kwh / price_chf_per_kwh -- still the same shape
+    #   * make the congestion term locational instead of aggregate
+    #   * add a time-of-use or demand-charge term alongside it
+    #   * smooth the congestion signal through `carry` instead of pricing the
+    #     instantaneous level -- the same anti-herding idea as the
+    #     controller's `carry.voltage_ewma_pu`, on the price side this time
+    #   * drop grid.energy_chf and price the interval from scratch
     # ===========================================================================
 
-    charge_chf = params["price_chf_per_kwh"] * excess_kwh * share
-    return charge_chf - jnp.mean(charge_chf)  # rebate: sums to zero
+    return grid.energy_chf - congestion_chf, carry
 
 
 # --- Exposure is not contribution -------------------------------------------

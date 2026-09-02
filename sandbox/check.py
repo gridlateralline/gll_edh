@@ -30,7 +30,7 @@ from sandbox.evaluate import Submission, evaluate
 from sandbox.metrics import compare, score
 from sandbox.rollout import build_env, rollout
 from sandbox.scenarios import STEPS_PER_DAY, reference_scenario
-from sandbox.tariff import tariff_from_charge
+from sandbox.tariff import tariff_from_settlement
 
 
 def my_controller_as_bundle() -> Controller:
@@ -46,10 +46,10 @@ def my_controller_as_bundle() -> Controller:
 
 
 def my_tariff_factory():
-    """The charge function in ``my_idea``, wrapped as a tariff."""
+    """The settlement function in ``my_idea``, wrapped as a tariff."""
     from sandbox import my_idea
 
-    return tariff_from_charge(my_idea.my_congestion_charge, my_idea.TARIFF_PARAMS)
+    return tariff_from_settlement(my_idea.my_tariff, my_idea.TARIFF_PARAMS)
 
 
 def run_check(days: int = 1, detail: bool = False, key: Optional[jax.Array] = None) -> None:

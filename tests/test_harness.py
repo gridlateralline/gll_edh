@@ -35,11 +35,11 @@ from sandbox.controller import (
 from sandbox.evaluate import Submission, evaluate
 from sandbox.export import feeder_dataframe, to_dataframe
 from sandbox.metrics import coincidence_factor, revenue_adequate, score
-from sandbox.numpy_bridge import numpy_controller
+from sandbox.numpy_bridge import numpy_controller, numpy_tariff
 from sandbox.observation import to_grid_view, to_local
 from sandbox.rollout import Trajectory, build_env, rollout, rollout_seeds
 from sandbox.scenarios import reference_scenario
-from sandbox.tariff import MyTariff, my_tariff, tariff_from_charge
+from sandbox.tariff import MyTariff, default_tariff, tariff_from_charge, tariff_from_settlement
 from sandbox.tuning import parameter_grid, tune
 
 DAY = 96
@@ -206,6 +206,89 @@ def test_a_nodal_tariff_needs_no_knowledge_of_gll_env(population) -> None:
     chex.assert_shape(trajectory.settlement_chf, (DAY, population.num_pq))
 
 
+def test_a_tariff_can_replace_the_settlement_entirely(population) -> None:
+    """`tariff_from_settlement` is the general pathway: `grid.energy_chf` is
+    offered, never required. A flat rate that never touches fair LEG's own
+    number must reach the scorer exactly like any other tariff."""
+
+    def flat_rate(grid, carry, params):
+        del params
+        return -0.20 * grid.net_kwh, carry  # 20 rappen/kWh, whichever way it flows
+
+    tariff = tariff_from_settlement(flat_rate, {})
+    env = build_env(population, time_limit=DAY, tariff=tariff)
+    trajectory = rollout(base_controller(), population, jax.random.PRNGKey(0), DAY, env=env)
+
+    assert bool(jnp.all(trajectory.valid))
+    chex.assert_shape(trajectory.settlement_chf, (DAY, population.num_pq))
+    # A flat rate is not revenue neutral interval by interval, unlike the
+    # rebate-based default -- that is the point of the test.
+    assert not bool(jnp.allclose(jnp.sum(trajectory.settlement_chf, axis=-1), 0.0, atol=1e-3))
+
+
+def test_a_tariff_can_carry_state_across_intervals(population) -> None:
+    """The tariff's counterpart to a controller's `carry`: state that a
+    demand charge, a ratchet, or a smoothed price actually needs. A custom
+    carry -- not `TariffMemory` -- is exactly as supported as a custom
+    `Memory` is on the controller side."""
+
+    def running_peak_charge(grid, carry, params):
+        del params
+        peak_kwh = jnp.maximum(carry, jnp.max(jnp.abs(grid.net_kwh)))
+        return -0.01 * peak_kwh * jnp.ones_like(grid.net_kwh), peak_kwh
+
+    tariff = tariff_from_settlement(running_peak_charge, {}, init_carry=lambda: jnp.float32(0.0))
+    env = build_env(population, time_limit=DAY, tariff=tariff)
+    trajectory = rollout(base_controller(), population, jax.random.PRNGKey(0), DAY, env=env)
+
+    assert bool(jnp.all(trajectory.valid))
+    # A running peak is monotone: the charge can only grow as the episode
+    # goes on, never shrink back down mid-episode.
+    per_interval = trajectory.settlement_chf[:, 0]
+    assert bool(jnp.all(jnp.diff(per_interval) <= 1e-6))
+
+
+def test_a_tariff_can_see_static_identity(population, env) -> None:
+    """`has_inverter` is equipment metadata, not a live reading: it should
+    exactly match which connection points are agents, and never change
+    within an episode."""
+    state, _ = env.reset(jax.random.PRNGKey(0))
+    model = env.environment
+    new_state, _ = model.step(state, jnp.zeros((model.num_agents, model.action_dim), jnp.float32))
+    grid = to_grid_view(model, new_state)
+
+    expected = np.zeros(population.num_pq, dtype=bool)
+    expected[list(population.inverter_id)] = True
+    np.testing.assert_array_equal(np.asarray(grid.has_inverter), expected)
+    assert int(np.sum(grid.has_inverter)) == population.num_agents
+
+
+def test_a_numpy_tariff_reaches_the_scorer(population) -> None:
+    """`numpy_tariff` mirrors `numpy_controller`: real `if`, real NumPy,
+    over the whole feeder rather than one household, wired the same way a
+    jnp settlement function is."""
+
+    @numpy_tariff
+    def tenant_floor(grid, carry, params):
+        del params
+        settlement = -0.20 * grid["net_kwh"]
+        if grid["hour"] < 24:  # a real branch; always true, just proving it works
+            settlement = np.where(grid["has_inverter"], settlement, settlement + 0.05)
+        return settlement, carry.replace(intervals=carry.intervals + 1)
+
+    env = build_env(population, time_limit=DAY, tariff=tenant_floor)
+    trajectory = rollout(base_controller(), population, jax.random.PRNGKey(0), DAY, env=env)
+
+    assert bool(jnp.all(trajectory.valid))
+    chex.assert_shape(trajectory.settlement_chf, (DAY, population.num_pq))
+    tenant_mask = np.asarray(population.mask_for("tenant"))
+    # Every tenant got the floor added on top of its flow-based charge --
+    # tenants still consume, so their net_kwh is not itself zero.
+    expected = -0.20 * np.asarray(trajectory.meter_kwh[0])
+    expected[tenant_mask] += 0.05
+    np.testing.assert_allclose(np.asarray(trajectory.settlement_chf[0]), expected, atol=1e-4)
+
+
 def test_the_grid_view_is_plain_si_over_connection_points(population, env) -> None:
     """Everything a tariff can see, enumerated, in the units it is named in."""
     state, _ = env.reset(jax.random.PRNGKey(0))
@@ -253,7 +336,7 @@ def test_the_revenue_gate_holds_behaviour_fixed(population) -> None:
             population,
             key,
             DAY,
-            env=build_env(population, time_limit=DAY, tariff=my_tariff),
+            env=build_env(population, time_limit=DAY, tariff=default_tariff),
         ),
         population,
     )
@@ -406,7 +489,7 @@ def test_a_submission_scores_four_distinguishable_cells(population) -> None:
     evaluation = evaluate(
         Submission(
             controller=passive_controller(),
-            tariff=my_tariff,
+            tariff=default_tariff,
             candidates={"export_cap_kw": [1.0e3, 3.0]},
         ),
         population,

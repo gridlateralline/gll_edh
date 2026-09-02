@@ -126,8 +126,9 @@ not work.
 There is no price to react to, so a controller is tuned across episodes:
 
 ```python
+from sandbox.check import my_tariff_factory
 from sandbox.tuning import tune
-params, table = tune(my_bundle, population, MY_TUNING_GRID, tariff=my_tariff)
+params, table = tune(my_bundle, population, MY_TUNING_GRID, tariff=my_tariff_factory())
 ```
 
 The tuner maximises **your own bill** and knows nothing about voltages or your

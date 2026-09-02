@@ -51,7 +51,7 @@ even in distribution, no controller can respond to it and you have built a
 lottery rather than a mechanism.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable
 
 import chex
 import jax.numpy as jnp
@@ -64,6 +64,29 @@ from sandbox.observation import GridView, to_grid_view
 
 if TYPE_CHECKING:
     from gll_env.components.environment import EnvironmentDynamics, EnvironmentState
+
+
+@chex.dataclass(frozen=True)
+class TariffMemory:
+    """The default tariff carry. Replace it with any fixed pytree -- a
+    tariff's counterpart to a controller's `Memory`.
+
+    Whatever a demand charge's running peak, a ratchet, or a *smoothed*
+    (rather than instantaneous) congestion signal needs to remember lives
+    here. `MyTariff`'s own default doesn't use it for anything beyond
+    counting intervals; see ``TARIFF_COOKBOOK.md`` for what it's for.
+
+    Attributes:
+        intervals: Count of settled intervals, for anything phase- or
+            billing-period-dependent.
+    """
+
+    intervals: chex.Array
+
+
+def init_tariff_memory() -> TariffMemory:
+    """The starting carry -- one per tariff, no connection-point axis."""
+    return TariffMemory(intervals=jnp.int32(0))
 
 
 @chex.dataclass(frozen=True)
@@ -80,10 +103,15 @@ class TariffState(RewardState):
             budget-balancing tariff needs exactly this kind of memory, and
             because carrying it demonstrates that a tariff *may*. State is
             what separates a tariff from a lookup table.
+        carry: Whatever else the tariff wants to remember -- a fixed pytree,
+            the tariff's counterpart to a controller's `carry`. Defaults to
+            `TariffMemory`; replace it with any pytree the same way a
+            controller replaces `Memory`.
     """
 
     settlement_chf: chex.Array
     collected_chf: chex.Array
+    carry: Any
 
 
 @chex.dataclass(frozen=True)
@@ -135,18 +163,23 @@ def base_tariff(prosumer: ProsumerDynamics) -> LegSettlementReward:
 
 
 class MyTariff(CausalReward):
-    """**EDIT ME.** Fair LEG plus a retroactive congestion charge.
+    """A naive, deliberately flawed starting tariff -- one shape among many.
 
-    The starting sketch is deliberately simple and deliberately flawed.
+    Out of the box it settles energy exactly as fair LEG does, then adds a
+    congestion term driven by the feeder's own aggregate flow. When the whole
+    feeder pushes past ``headroom_kwh`` in either direction, the households
+    pushing it in that direction are charged in proportion to how much of the
+    excess is theirs, and the proceeds are rebated equally across all
+    eighteen connection points.
 
-    It settles energy exactly as fair LEG does, then adds a congestion term
-    driven by the feeder's own aggregate flow. When the whole feeder pushes
-    past ``headroom_kwh`` in either direction, the households pushing it in
-    that direction are charged in proportion to how much of the excess is
-    theirs, and the proceeds are rebated equally across all eighteen
-    connection points.
+    That shape -- "fair LEG plus a surcharge" -- is a convenient default, not
+    a constraint. :meth:`settlement_from_view` is the whole interval's
+    settlement; override it (or hand a plain function to
+    :func:`tariff_from_settlement`) to price the interval however you like,
+    fair LEG included or not. See ``TARIFF_COOKBOOK.md``.
 
-    Three properties worth keeping, whatever you replace the middle with:
+    Three properties worth keeping if you build on the default rather than
+    replacing it outright:
 
     * **Retroactive.** It is computed from the flow that just happened, so no
       household knew it while acting.
@@ -180,6 +213,9 @@ class MyTariff(CausalReward):
             direction, that costs nothing. Beyond it, congestion is priced.
         price_chf_per_kwh: What a kWh of excess flow costs the household
             responsible for it.
+        init_carry: Builds the tariff's starting carry -- state that survives
+            across intervals. Defaults to `init_tariff_memory`; supply your
+            own the way a controller supplies its own `init_carry`.
     """
 
     def __init__(
@@ -187,21 +223,43 @@ class MyTariff(CausalReward):
         prosumer: ProsumerDynamics,
         headroom_kwh: float = 3.0,
         price_chf_per_kwh: float = 1.00,
+        init_carry: Callable[[], Any] = init_tariff_memory,
     ) -> None:
         self._leg = LegSettlementReward(payments=base_payments(), prosumer=prosumer)
         self._num_pq = prosumer.num_pq
         self._headroom_kwh = float(headroom_kwh)
         self._price = float(price_chf_per_kwh)
+        self._init_carry = init_carry
 
     def reset(self, key: chex.PRNGKey) -> TariffState:
         del key
         return TariffState(
             settlement_chf=jnp.zeros((self._num_pq,), dtype=jnp.float32),
             collected_chf=jnp.float32(0.0),
+            carry=self._init_carry(),
         )
 
+    def settlement_from_view(self, grid: "GridView", carry: Any) -> tuple[chex.Array, Any]:
+        """The WHOLE interval's settlement, ``(num_pq,)`` CHF, and the carry
+        to bring to the next interval. Override this.
+
+        This is the general seam -- ``grid.energy_chf`` is offered as a
+        starting point, not a floor underneath you. Ignore it entirely for a
+        flat rate, a time-of-use schedule, a locational price built from
+        ``grid.voltage_pu``, or anything else that is a function of one
+        settled interval plus whatever you chose to remember. The default
+        keeps today's shape (fair LEG plus a redistributed surcharge) and
+        passes `carry` through untouched, for continuity, nothing more.
+        """
+        return grid.energy_chf - self.congestion_charge_from_view(grid), carry
+
     def congestion_charge_from_view(self, grid: "GridView") -> chex.Array:
-        """Override this to price the whole feeder. See :class:`GridView`."""
+        """Override this to price *just* the congestion term. See :class:`GridView`.
+
+        Only relevant if you keep :meth:`settlement_from_view`'s default
+        shape (fair LEG plus a surcharge). Redesigning the settlement itself
+        means overriding :meth:`settlement_from_view` instead.
+        """
         return self.congestion_charge(grid.net_kwh)
 
     def congestion_charge(self, e_pq_kwh: chex.Array) -> chex.Array:
@@ -233,14 +291,16 @@ class MyTariff(CausalReward):
         leg_state, _ = self._leg.settle(reward_state, state, new_state, dynamics)
         energy_chf = jnp.asarray(leg_state.settlement_chf, dtype=jnp.float32)
 
-        grid = to_grid_view(dynamics, new_state)
-        settlement_chf = energy_chf - self.congestion_charge_from_view(grid)
+        grid = to_grid_view(dynamics, new_state, energy_chf=energy_chf)
+        settlement_chf, carry = self.settlement_from_view(grid, reward_state.carry)
+        settlement_chf = jnp.asarray(settlement_chf, dtype=jnp.float32)
 
         inverter_id = jnp.asarray(dynamics.prosumer.inverter_id, dtype=jnp.int32)
         return (
             TariffState(
                 settlement_chf=settlement_chf,
                 collected_chf=reward_state.collected_chf - jnp.sum(settlement_chf),
+                carry=carry,
             ),
             settlement_chf[inverter_id],
         )
@@ -251,17 +311,55 @@ class MyTariff(CausalReward):
         )
 
 
-def my_tariff(prosumer: ProsumerDynamics) -> MyTariff:
-    """Your tariff, with its starting parameters."""
+def default_tariff(prosumer: ProsumerDynamics) -> MyTariff:
+    """:class:`MyTariff` at its starting parameters -- a stand-in for "some
+    submitted tariff" in tests and examples. Participants write their own in
+    ``sandbox/my_idea.py`` instead of calling this directly."""
     return MyTariff(prosumer, headroom_kwh=3.0, price_chf_per_kwh=1.00)
+
+
+def tariff_from_settlement(
+    settlement_fn, params: dict, init_carry: Callable[[], Any] = init_tariff_memory
+):
+    """Turn a plain ``settlement(grid, carry, params) -> (chf, carry)`` into a tariff.
+
+    This is the general pathway: `settlement_fn` returns the WHOLE interval's
+    settlement, not a term added to fair LEG. `grid.energy_chf` carries fair
+    LEG's own number as a starting point you are free to use, adjust, or
+    ignore -- see :class:`GridView`. Nothing here restricts the design to a
+    surcharge; a flat rate, a time-of-use schedule, or a fully nodal price are
+    all just a different `settlement_fn`.
+
+    A participant writes one pure function over one view instead of
+    subclassing anything. `carry` is threaded automatically between
+    intervals, the tariff's counterpart to a controller's -- pass your own
+    `init_carry` if you replace `TariffMemory` with something else, or ignore
+    the argument entirely and return it unchanged for a stateless tariff.
+    Returns a factory, which is what :func:`sandbox.rollout.build_env` takes.
+
+    Revenue adequacy -- not handing out more than the network takes in -- is
+    checked empirically against fair LEG's own total after the fact (see
+    :func:`sandbox.metrics.revenue_adequate`), not enforced here. A settlement
+    that happens to sum to zero every interval passes trivially; one that
+    doesn't can still pass, as long as it stays within tolerance of what fair
+    LEG collects.
+    """
+
+    class _FromSettlement(MyTariff):
+        def settlement_from_view(self, grid: GridView, carry: Any) -> tuple[chex.Array, Any]:
+            return settlement_fn(grid, carry, params)
+
+    return lambda prosumer: _FromSettlement(prosumer, init_carry=init_carry)
 
 
 def tariff_from_charge(charge_fn, params: dict):
     """Turn a plain ``charge(net_kwh, params) -> (num_pq,) CHF`` into a tariff.
 
-    So a participant writes one pure function over one array instead of
-    subclassing anything. Returns a factory, which is what
-    :func:`sandbox.rollout.build_env` takes.
+    Narrower than :func:`tariff_from_settlement`: `charge_fn` is added as a
+    surcharge on top of fair LEG's own settlement rather than replacing it.
+    Kept for anyone who wants exactly that shape -- a redistributed
+    congestion term over the existing tariff -- without touching energy
+    pricing at all.
     """
 
     class _FromCharge(MyTariff):

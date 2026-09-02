@@ -15,13 +15,19 @@ uv run jupyter lab notebooks/00_quickstart.ipynb
 ```
 
 Then open **[`sandbox/my_idea.py`](sandbox/my_idea.py)**. It holds two
-functions and nothing else, and it is the only file you need to touch.
+functions — a household controller and a grid tariff — and is the only file
+you need to touch to get started. Both are naive, working defaults you are
+meant to overwrite: `my_controller` covers most controller ideas as-is, and
+`my_tariff` is a full settlement, not a bolt-on charge, so it has just as much
+room to grow. When you outgrow the plain function, the
+[controller](CONTROLLER_COOKBOOK.md) and [tariff](TARIFF_COOKBOOK.md)
+cookbooks cover what's underneath.
 
 **You never need to read the simulator.** `gll_env` runs the power flow
 underneath, and both seams are given plain SI views of it — `obs` for one
 household, `grid` for the whole feeder — so neither function ever mentions an
 environment type, a per-unit conversion, or a bus index. One repository,
-one file.
+one file to start, two references when you need them.
 
 ```python
 from sandbox.my_idea import check, score
@@ -97,10 +103,19 @@ to index. vmap is the fairness contract, not just a speed trick.
 
 ## Four pathways
 
-1. **Design the price** — edit `MyTariff` in [`sandbox/tariff.py`](sandbox/tariff.py).
-2. **Design the household** — edit `my_controller` in [`sandbox/controller.py`](sandbox/controller.py).
+1. **Design the price** — edit `my_tariff` in [`sandbox/my_idea.py`](sandbox/my_idea.py).
+   Not confined to a surcharge on top of fair LEG — see
+   [`TARIFF_COOKBOOK.md`](TARIFF_COOKBOOK.md) for how far it goes.
+2. **Design the household** — edit `my_controller` in
+   [`sandbox/my_idea.py`](sandbox/my_idea.py). See
+   [`CONTROLLER_COOKBOOK.md`](CONTROLLER_COOKBOOK.md).
 3. **Audit it** — `sandbox.export.to_dataframe()` gives you a tidy pandas frame. No JAX required.
 4. **Show it** — same frame; the feeder has coordinates for a map.
+
+Pathways 1 and 2 are equally central — a submission may touch either, both, or
+neither and fall back to the reference. Neither is the "simple" one: the
+controller pathology is what makes the challenge exist, the tariff is what
+closes it.
 
 ## Writing a controller
 
@@ -114,7 +129,7 @@ def my_controller(obs, carry, params, key):
 
 Return anything you like — it is clipped to `[p_min_kw, p_max_kw]` and then
 projected onto the physically feasible set. **A controller cannot crash the
-simulation.**
+simulation.** Full reference: [`CONTROLLER_COOKBOOK.md`](CONTROLLER_COOKBOOK.md).
 
 Everything is SI: **kW**, **kWh**, **CHF**, **per-unit** voltage. Every field
 name carries its unit, because a silent factor of four between kW and kWh is
@@ -131,6 +146,29 @@ the easiest mistake here to make.
 The rollout cannot tell them apart. Write it eager, keep it in NumPy if you
 like, and score it either way — the results are identical, and there is a test
 asserting that.
+
+## Writing a tariff
+
+```python
+def my_tariff(grid, carry, params):
+    """The WHOLE feeder, one interval. Returns (num_pq,) CHF, signed, and carry."""
+    return grid.energy_chf - my_congestion_term(grid, params), carry
+```
+
+This is the whole settlement, not a term added to a decision someone else
+already made. `grid.energy_chf` — fair LEG's own number for the interval — is
+offered as a starting point; use it, adjust it, or ignore it and price the
+interval from scratch. `grid.has_inverter` is static rate-class metadata, not
+a live reading, for saying what you mean directly (a tenant floor) instead of
+inferring it from behaviour. `carry` is threaded to the next interval,
+exactly like a controller's — a demand charge's running peak, a ratchet, or a
+*smoothed* congestion signal instead of an instantaneous one all live there.
+Two things checked automatically, not by hand: `settlement_chf` must be
+shaped `(num_pq,)`, and revenue adequacy is gated empirically against what
+fair LEG itself collects — a tariff that pays everybody is disqualified, one
+that redistributes is not. There's a NumPy tier too (`@numpy_tariff`, even
+simpler than the controller's since there's no agent axis to fake under
+`vmap`). Full reference: [`TARIFF_COOKBOOK.md`](TARIFF_COOKBOOK.md).
 
 ## Scoring
 
@@ -232,17 +270,23 @@ uv run pre-commit install    # optional
 
 ```
 sandbox/
-├── tariff.py        ← EDIT ME (pathway 1)
-├── controller.py    ← EDIT ME (pathway 2)
-├── numpy_bridge.py    write it in NumPy instead
+├── my_idea.py       ← START HERE (both pathways, plain functions)
+├── tariff.py          the tariff seam underneath      [pathway 1, advanced]
+├── controller.py      the controller seam underneath  [pathway 2, advanced]
+├── numpy_bridge.py    write your controller or tariff in NumPy instead
 ├── scenarios.py       who lives on the feeder
-├── observation.py     what one household can measure
+├── observation.py     what one household can measure, and what the grid can
 ├── rollout.py         the loop           [do not edit]
 ├── tuning.py          household best response
 ├── metrics.py         the jury           [do not edit]
 ├── evaluate.py        the four cells     [do not edit]
 └── export.py          tidy frames, no JAX needed
 ```
+
+`tariff.py` and `controller.py` are where `my_idea.py`'s two functions
+actually get wired in, and where the escape hatches live for anyone who
+outgrows a plain function — a stateful tariff (`MyTariff`), a `@numpy_controller`.
+Most submissions never need to open either.
 
 ## Licence
 

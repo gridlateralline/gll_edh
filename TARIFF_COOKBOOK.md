@@ -15,9 +15,10 @@ over the whole feeder at once. There is no household-by-household loop to
 write and no agent axis to index — every field below is already an array
 over all 18 connection points.
 
-This is the whole settlement, not a surcharge on one that is already
-decided. Nothing requires you to build on fair LEG, add a term to it, or even
-look at it.
+What you return is the interval's settlement: the final number each connection
+point pays or earns. A flat rate, a time-of-use schedule, a demand charge, a
+nodal price built from voltage sensitivity, or fair LEG plus a congestion term
+are all just different return values from this one function.
 
 `carry` is yours, threaded to the next interval — the tariff's counterpart to
 a controller's `carry`. It defaults to `TariffMemory` (see "carrying state"
@@ -39,12 +40,10 @@ state, no per-unit conversions, no bus-versus-connection-point index hops.
 | `energy_chf` | `(18,)` | CHF | what ewz's real, published fair-LEG rate would settle this interval as |
 | `has_inverter` | `(18,)` bool | — | who can act at all — a static equipment fact, not a live reading |
 
-**`energy_chf` is a starting point, not a floor.** It exists so "design a
-tariff" does not silently mean "design a surcharge on top of this one." Use
-it as a base and add a term to it (the default does exactly this), use only
-the parts you want, or ignore it completely and price the interval from
-scratch — a flat rate, a time-of-use schedule, a demand charge, whatever you
-like. All three are just different return values from the same function.
+**`energy_chf` is an input, not a base you have to build on.** It is there
+because pricing energy from scratch is work you may not want to redo, and the
+shipped default does build on it. Use it whole, use the parts you want, or
+compute the interval's settlement without touching it.
 
 **`has_inverter` is who they are, not what they did this interval.** It
 comes from the population's fixed asset mix and never changes within an
@@ -106,12 +105,11 @@ structure across episodes, not against any one price. If your tariff is
 unpredictable even in distribution, no controller can respond to it and
 you've built a lottery, not a mechanism.
 
-## From a naive default to something ambitious
+## From the default to something ambitious
 
 `sandbox/my_idea.py`'s `my_tariff` ships with fair LEG's `energy_chf` plus a
-crude, aggregate congestion surcharge — the same shape as before this
-cookbook existed. Treat it as tier zero. Some directions from there, roughly
-in order of how much of the naive default survives:
+crude, aggregate congestion surcharge. Treat it as tier zero. Some directions
+from there, roughly in order of how much of the default survives:
 
 1. **Retune the same shape.** Change `headroom_kwh` / `price_chf_per_kwh`.
    Cheapest experiment, tells you if the mechanism is even in the right
@@ -122,11 +120,10 @@ in order of how much of the naive default survives:
    against an aggregate signal can synchronise *harder*, not less.
 3. **Add a second term** alongside it — a time-of-use schedule on
    `grid.hour`, a demand charge on `grid.transformer_kw`, whatever your idea
-   needs. Still additive to `grid.energy_chf`; just more than one term.
-4. **Replace `grid.energy_chf` entirely.** Nothing about the harness assumes
-   fair LEG underneath. A flat rate, a two-part tariff, a fully nodal price
-   built from voltage sensitivity — write the interval's settlement from
-   scratch and return it.
+   needs.
+4. **Price the interval from scratch.** Nothing in the harness assumes fair
+   LEG underneath. A flat rate, a two-part tariff, a fully nodal price built
+   from voltage sensitivity — compute the settlement and return it.
 
 For (4), the plain-function signature is still enough — you never need to
 touch `sandbox/tariff.py` unless you want state that survives across
@@ -134,31 +131,31 @@ intervals (see "carrying state" below).
 
 ## Wiring it in
 
-`sandbox/check.py` wraps whatever `my_tariff` currently is via
-[`tariff_from_settlement`](sandbox/tariff.py):
+`check()` and `score()` pick up whatever `my_tariff` currently is and wrap it
+via [`tariff_from_settlement`](sandbox/tariff.py), so editing the function in
+`my_idea.py` is all that is required. To build one by hand — for a notebook,
+or a sweep of your own:
 
 ```python
 from sandbox.tariff import tariff_from_settlement
 tariff = tariff_from_settlement(my_tariff, TARIFF_PARAMS)
 ```
 
-`tariff_from_settlement` is the general pathway — your function's return
-value **is** the settlement. There is also
-[`tariff_from_charge`](sandbox/tariff.py), narrower and kept only for anyone
-who wants exactly the old shape: a stateless function that returns a
-surcharge which gets added to fair LEG's own settlement for them, rather
-than replacing it.
+There is also [`tariff_from_charge`](sandbox/tariff.py), a narrower
+convenience: give it a function returning a surcharge and it adds that to fair
+LEG's settlement for you, leaving energy pricing alone. Reach for it when a
+redistributed charge on top of the existing tariff is exactly the idea;
+`tariff_from_settlement` is the general pathway.
 
 ## Carrying state across intervals
 
-Every interval by default is priced from what just happened, nothing more —
-`carry` starts at `TariffMemory`'s default and a stateless tariff just
-returns it unchanged, same as the naive `my_tariff` does. But state is a
-first-class part of the signature, not an escape hatch: use it for a running
-total towards a demand charge, a ratchet, or — the interesting one — a
-*smoothed* congestion signal instead of an instantaneous one, the same
-anti-herding idea as a controller's `carry.voltage_ewma_pu`, applied to the
-price instead of the household:
+By default every interval is priced from what just happened and nothing more —
+`carry` starts at `TariffMemory`'s default and a stateless tariff returns it
+unchanged, as the shipped `my_tariff` does. But state is a first-class part of
+the signature, not an escape hatch: use it for a running total towards a demand
+charge, a ratchet, or — the interesting one — a *smoothed* congestion signal
+instead of an instantaneous one, the same anti-herding idea as a controller's
+`carry.voltage_ewma_pu`, applied to the price instead of the household:
 
 ```python
 @chex.dataclass(frozen=True)
@@ -195,10 +192,9 @@ if you find yourself reaching past it more than once.
 
 ## Five JAX rules
 
-Exactly the [same five as the controller](CONTROLLER_COOKBOOK.md#five-jax-rules)
-— `my_tariff` is jnp code under the same `jit`/`scan`, not a plain Python
-function that happens to run once per interval instead of once per
-household. In particular:
+`my_tariff` is jnp code under the same `jit`/`scan` as a controller, not a
+plain Python function that happens to run once per interval instead of once
+per household. Skip this section entirely if you use `@numpy_tariff` below.
 
 **No `if` on a traced value.**
 ```python
@@ -206,12 +202,25 @@ p = jnp.where(grid.hour > 18.0, 0.20, 0.10)   # yes
 if grid.hour > 18.0: ...                       # no
 ```
 
-**No item assignment, no `.item()`/`float()`/`bool()`, no Python loops over
-connection points, clip-don't-assert.** Use `@numpy_tariff` (below) and none
-of this applies.
+**No item assignment.** `x = x.at[i].set(v)`, never `x[i] = v`.
 
-When something breaks, run `rollout(..., fast=False)` first. Values become
-concrete, `print` works, and the traceback points at your line.
+**No `.item()`, `float()`, `bool()`** on a traced value.
+
+**No Python loops over connection points.** They are already an array; act on
+all eighteen at once.
+
+**Clip, do not assert.** `jnp.clip` and `jnp.where` instead of raising.
+
+## When it breaks
+
+Run **`check(fast=False)`** first, always: it drops the compilation, so values
+are concrete, `print` works, and the traceback points at your own line.
+
+| what you see | what it means |
+|---|---|
+| `A tariff must settle all 18 connection points` | you returned `(num_agents,)`, or a scalar. Return something shaped like `grid.net_kwh`. |
+| `TracerBoolConversionError` | a Python `if` on a value that depends on `grid`. Use `jnp.where`, or move to the NumPy tier. |
+| `scan body function carry ... must have equal types` | your carry changed shape or dtype between intervals. It must be fixed in both. |
 
 ## Writing it in NumPy
 
@@ -223,18 +232,19 @@ no agent axis to fake under `vmap` — just a bare host round trip.
 from sandbox.numpy_bridge import numpy_tariff
 
 @numpy_tariff
-def my_rule(grid, carry, params):
+def my_tariff(grid, carry, params):
     if grid["hour"] > 18:                      # a real branch
         return -0.20 * grid["net_kwh"], carry
     return -0.10 * grid["net_kwh"], carry
 ```
 
 `grid` arrives as a dict of plain NumPy arrays — see
-[`GridView.as_dict`](sandbox/observation.py). Returns a tariff factory
-directly, ready for `build_env(tariff=...)`. See
-[`sandbox/numpy_bridge.py`](sandbox/numpy_bridge.py) for the full docstring
-and the two rules that survive into this tier (fixed-shape carry, no side
-effects) — identical to the controller's NumPy tier.
+[`GridView.as_dict`](sandbox/observation.py). Decorate `my_tariff` in
+`my_idea.py` in place and `check()` and `score()` keep working; pass your own
+numbers with `@numpy_tariff(params=TARIFF_PARAMS)`. See
+[`sandbox/numpy_bridge.py`](sandbox/numpy_bridge.py) for the two rules that
+survive into this tier — fixed-shape carry, no side effects — identical to the
+controller's NumPy tier.
 
 ## It's a Stackelberg game, and that's the point
 
@@ -264,16 +274,17 @@ is an order of magnitude below the headline. A price that looks punitive in
 aggregate can be nearly invisible at the margin, which is the first thing to
 check when a tariff seems to change nothing.
 
-Print `grid.*` and your intermediate terms in eager mode (`fast=False`)
-before concluding your idea does not move anybody.
+Print `grid.*` and your intermediate terms under `check(fast=False)` before
+concluding your idea does not move anybody.
 
 ## Checklist
 
 - [ ] Returns `(settlement_chf, carry)`, `settlement_chf` shaped `(num_pq,)`
       matching `grid.net_kwh`
 - [ ] Carry has fixed shape and dtype
-- [ ] Runs under `rollout(..., fast=False)` without an exception
-- [ ] `check()` shows `revenue adequacy: PASS` (or you understand exactly why not)
+- [ ] Runs under `check(fast=False)` without an exception
+- [ ] `score()` reports `revenue adequacy: PASS` (or you understand exactly why
+      not) — `check()` is too short to run the gate
 - [ ] Parameters are the right order of magnitude — verified against the
       marginal exposure, not the headline number
 - [ ] Tenants (`p_min_kw == p_max_kw == 0`, absent from any agent-indexed

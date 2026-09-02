@@ -79,7 +79,7 @@ Every field name carries its unit, because a silent factor-of-four between kW
 and kWh is the single easiest mistake to make in this codebase.
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 import chex
 import jax.numpy as jnp
@@ -302,6 +302,21 @@ class GridView:
         losses_kw: () What the network itself consumed. Quadratic in flow, so
             synchronised behaviour costs more than its average suggests.
         hour: () Hour of the settled interval, 0 to 24.
+        energy_chf: (num_pq,) What fair LEG -- ewz's published rate, in force
+            today -- would settle this interval as. A starting point, nothing
+            more: a tariff is free to add to it, replace pieces of it, or
+            ignore it completely and price the interval from scratch. It is
+            here so that "design a tariff" does not silently mean "design a
+            surcharge on top of this one" -- see
+            :func:`sandbox.tariff.tariff_from_settlement`.
+        has_inverter: (num_pq,) bool. Static equipment fact, not a live
+            reading -- who has an inverter (and therefore can act at all)
+            does not change during an episode. It is here so a tariff can say
+            what it means directly (a tenant floor, a different rate class)
+            instead of inferring it from behaviour. It is *not* an escape
+            hatch for pricing what a household did this interval; use
+            `net_kwh` / `voltage_pu` for that, the way a real rate class
+            never depends on this week's meter reading.
     """
 
     net_kwh: chex.Array
@@ -310,15 +325,43 @@ class GridView:
     transformer_kw: chex.Numeric
     losses_kw: chex.Numeric
     hour: chex.Numeric
+    energy_chf: chex.Array
+    has_inverter: chex.Array
+
+    def as_dict(self) -> dict[str, chex.Array]:
+        """Plain dict of named values, for tariffs written in NumPy.
+
+        Nobody should have to learn a type hierarchy to write a heuristic.
+        """
+        return {
+            "net_kwh": self.net_kwh,
+            "net_kw": self.net_kw,
+            "voltage_pu": self.voltage_pu,
+            "transformer_kw": self.transformer_kw,
+            "losses_kw": self.losses_kw,
+            "hour": self.hour,
+            "energy_chf": self.energy_chf,
+            "has_inverter": self.has_inverter,
+        }
 
 
-def to_grid_view(env_model: Any, new_state: Any) -> GridView:
-    """Build the tariff's view from the environment state it just settled."""
+def to_grid_view(
+    env_model: Any, new_state: Any, energy_chf: Optional[chex.Array] = None
+) -> GridView:
+    """Build the tariff's view from the environment state it just settled.
+
+    `energy_chf` is optional because computing it needs the reward state and
+    dynamics a tariff carries, not just `new_state` -- callers without it get
+    zeros, which is exactly right anywhere fair LEG itself is not in the loop
+    (tests, the quickstart notebook).
+    """
     grid = env_model.grid
     pq_id = jnp.asarray(grid.pq_id, dtype=jnp.int32)
     slack = jnp.asarray(grid.slack_id, dtype=jnp.int32)[0]
     injection_pu = new_state.grid_state.bus_power_injection_pu
     step_h = jnp.asarray(env_model.time.step_duration_h, dtype=jnp.float32)
+    num_pq = jnp.asarray(pq_id).shape[0]
+    inverter_id = jnp.asarray(env_model.prosumer.inverter_id, dtype=jnp.int32)
 
     net_kwh = jnp.real(new_state.prosumer_state.s_pq_realized_kvah)
     return GridView(
@@ -327,5 +370,11 @@ def to_grid_view(env_model: Any, new_state: Any) -> GridView:
         voltage_pu=jnp.abs(new_state.grid_state.bus_voltage_pu)[pq_id],
         transformer_kw=grid.pu_to_kw(jnp.real(injection_pu)[slack]),
         losses_kw=grid.pu_to_kw(jnp.sum(jnp.real(injection_pu))),
+        energy_chf=(
+            jnp.zeros_like(net_kwh)
+            if energy_chf is None
+            else jnp.asarray(energy_chf, dtype=jnp.float32)
+        ),
+        has_inverter=jnp.zeros((num_pq,), dtype=bool).at[inverter_id].set(True),
         hour=env_model.time.observation(new_state.time_state).interval_start,
     )

@@ -129,6 +129,14 @@ FEEDER_STRENGTHS: dict[str, float] = {
 #: its own right.
 FEEDER_IMPEDANCE_SCALE = FEEDER_STRENGTHS["rural"]
 
+#: Weather that persists for days rather than jittering hourly. The two are a
+#: pair and neither means anything alone -- see the note at the bottom of this
+#: module. Together they give roughly three times the week-to-week variation of
+#: gll_env's defaults at the same intra-day character, and they make the
+#: herding demo markedly sharper.
+CLEARNESS_REVERSION = 0.001
+CLEARNESS_STD = 0.018
+
 
 @dataclass(frozen=True)
 class HouseholdType:
@@ -439,13 +447,15 @@ def assign_population(
                         "peak_charge_kW": [h.battery_kw for h in agents],
                         "peak_discharge_kW": [h.battery_kw for h in agents],
                     },
-                    "solar": {"peak_power_kW": [h.pv_kwp for h in agents]},
+                    "solar": {
+                        "peak_power_kW": [h.pv_kwp for h in agents],
+                        # Persistent weather. See the note at the bottom of
+                        # this module -- these two only make sense together.
+                        "clearness_reversion": CLEARNESS_REVERSION,
+                        "clearness_std": CLEARNESS_STD,
+                    },
                 },
             },
-            # Randomness is left at gll_env's defaults, deliberately. See
-            # the note on weather at the bottom of this module before
-            # changing clearness_* or load_factor_*.
-            #
             # Fair LEG: ewz's published local-electricity-community tariff, and
             # therefore the status quo. The challenge is to beat what is
             # actually done today, not a toy.
@@ -481,41 +491,51 @@ def peak_power_kw(population: Population) -> jnp.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# On weather, and why the stochastic parameters are left alone
+# On weather: clearness_reversion and clearness_std only mean anything together
 # ---------------------------------------------------------------------------
 #
-# `SolarDynamics` and `LoadDynamics` carry mean-reverting noise processes
-# (clearness_reversion / clearness_mean / clearness_std, load_factor_reversion
-# / load_factor_std). This scenario uses their defaults. Measured, over twenty
-# seven-day episodes:
+# An Ornstein-Uhlenbeck process has stationary spread ``std / sqrt(2 * rev)``
+# and correlation time ``1 / rev``. Those share both parameters, which is why
+# sweeping either one alone is misleading -- and it misled this file once.
 #
-#     default (rev 0.05, std 0.10)   3.6 % week-to-week CV,  8.2 % day-to-day
-#     clearness_std 0.20             3.6 %                   8.3 %
-#     clearness_std 0.30             3.3 %                   7.4 %
-#     clearness_reversion 0.005      5.8 %                  12.3 %
+# Vary std alone and nothing happens: at gll_env's default reversion of 0.05
+# the process reverts within about five hours, so a week is an average over
+# ~130 independent spells and the day-to-day noise cancels out of the weekly
+# total. Tripling std moves the week-to-week spread DOWN, because larger steps
+# just clip harder against clearness's [0, 1] bounds.
 #
-# Two things worth knowing before reaching for a knob.
+# Vary reversion alone and the amplitude explodes: at std 0.10 dropping
+# reversion to 0.005 puts the stationary spread at 1.0, so clearness spends its
+# time pinned at the bounds and saturation eats the extra variation.
 #
-# **clearness_std does not control weather variability.** Tripling it moves
-# week-to-week spread DOWN, because the process reverts fast enough that larger
-# steps are pulled straight back and clip harder at the ends. The parameter
-# that reads like "how variable is the weather" is really "how jagged is the
-# walk". clearness_reversion is the lever that does something, and even a
-# tenfold slowdown only reaches 5.8 %.
+# Move them together, holding the spread fixed, and the effect appears --
+# variation migrates out of intra-day jitter and into between-week persistence:
 #
-# **The low variance is a feature here, not an oversight.** Real Swiss weeks
-# vary 30-50 % in yield; this one produces a typical week, repeated. That is
-# what makes twenty seeds enough to rank submissions -- every pairwise
-# comparison between reference controllers is distinguishable at 95 %
-# confidence, including differences under 1 kW. Realistic weather would swamp
-# small differences and need far more episodes than a two-day event can spend.
+#     rev     std    spread  corr.time   week CV   day CV
+#     0.050   0.100   0.32       5 h       3.6 %    8.2 %   <- gll_env default
+#     0.020   0.040   0.20      12 h       4.0 %    6.9 %
+#     0.005   0.020   0.20      50 h       6.3 %    5.8 %
+#     0.001   0.009   0.20     250 h       8.5 %    3.4 %
+#     0.001   0.018   0.40     250 h      11.7 %    6.4 %   <- used here
 #
-# What is given up is real: no cloudy-week-versus-sunny-week, and no
-# seasonality at all, since clearness_mean is pinned at 0.6 with no solar
-# declination. Every episode is the same season. A controller cannot be tested
-# for weather robustness here.
+# The setting used here gives about three times the default's week-to-week
+# variation while keeping day-to-day variation realistic. Two things it buys,
+# both measured:
 #
-# If that is ever wanted, the fix is not in this file: clearness_mean would
-# have to be drawn per episode in `gll_env`, so that an episode can be a
-# cloudy week rather than an average one. It is a fixed field of the dynamics
-# today, not something reset() samples.
+# It makes the challenge SHARPER rather than noisier. The ramp pathology --
+# self-consumption's steepest transformer swing against doing nothing -- goes
+# from 1.57x to 2.72x, because sustained sunny spells let every battery fill
+# and then stop absorbing together, where jittery weather staggered the fills
+# and masked the effect.
+#
+# And the leaderboard survives it. Every pairwise comparison between reference
+# controllers is still distinguishable at 95 % confidence over twenty seeds,
+# because the comparisons are PAIRED on the same weather -- common variation
+# cancels, and only the controller difference is left.
+#
+# What is still missing is seasonality. clearness_mean is pinned at 0.6 with no
+# solar declination, so an episode can be a duller week but never a winter one,
+# and 11.7 % is still short of the 30-50 % real Swiss weeks vary by. The
+# remaining fix is not in this file: clearness_mean would have to be drawn per
+# episode in gll_env, which is a fixed field of the dynamics today rather than
+# something reset() samples.

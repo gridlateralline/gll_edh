@@ -48,8 +48,11 @@ Measured on the reference week:
 
 | controller | export peak | ramp | coincidence | bill |
 |---|---|---|---|---|
-| do nothing | 65.0 kW | **9.2 kW** | 0.728 | 241 CHF |
-| self-consumption | 61.2 kW | **14.4 kW** | 0.678 | 264 CHF |
+| do nothing | 64.6 kW | **6.3 kW** | 0.805 | 276 CHF |
+| self-consumption | 62.9 kW | **17.1 kW** | 0.788 | 299 CHF |
+
+The steepest swing at the transformer gets **2.7× worse**, while every number a
+household can see improves.
 
 Better for each household, worse for the system they share. That is the school
 of fish: every fish using only what it can see from where it is, and the school

@@ -27,6 +27,12 @@ the strategy the submission proposes. A household cannot best-respond into a
 strategy its firmware cannot express, which makes the first the short-run
 answer and the second the equilibrium the price is steering toward.
 
+The response is bounded by design. :func:`~sandbox.tuning.tune` searches the
+parameters in ``Submission.candidates`` within the controller of the cell it
+is scoring, not every controller anyone could write. An unconstrained
+follower would leave the two cells sharing no basis for comparison, and the
+premium nothing to measure.
+
 Four cells, at the cost of one extra pair of rollouts:
 
 ===================== ===================== ==========================

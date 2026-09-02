@@ -278,6 +278,16 @@ best-respond within the strategy it already implements. The gap, the
 **co-design premium**, is how much of your result needs the market to supply
 the controller your price is designed to make worth building.
 
+"Best response" is bounded on purpose: `tune()` searches the parameters
+[`TUNE_OVER`](sandbox/my_idea.py) lists, inside whichever controller the cell
+is running. It is not an unconstrained search over every controller anyone
+could write — that would be a research project rather than a scoring step, and
+it would leave the two bottom cells with nothing in common to compare. Pinning
+the follower's strategy space is what makes the premium mean something. It
+also means `TUNE_OVER` is part of your submission: a controller whose good
+parameters are not in the sweep will be scored at parameters nobody would
+actually choose.
+
 ## Scale, and why nothing happened
 
 The single most common way a tariff does nothing: the price is the wrong

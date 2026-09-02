@@ -169,7 +169,15 @@ concluding your idea does not work.
 
 There is no price to react to, so a controller is tuned across episodes. List
 the parameters worth searching in `TUNE_OVER` in `my_idea.py` and `score()`
-sweeps them for you. To run the same search by hand:
+sweeps them for you.
+
+`TUNE_OVER` is part of your submission, not a convenience. It defines the
+household's best response — the tuner searches those values inside your
+controller, and nothing outside them — so a good idea whose good parameters
+are missing from the sweep gets scored at parameters no household would
+actually choose.
+
+To run the same search by hand:
 
 ```python
 from sandbox.check import my_controller_as_bundle, my_tariff_factory

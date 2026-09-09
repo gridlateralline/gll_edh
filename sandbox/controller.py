@@ -143,8 +143,27 @@ class Controller:
     Parameters are shared deliberately. Heterogeneity lives in the *state* --
     a tenant has ``p_inv_min_kw == p_inv_max_kw == 0`` and the same parameters produce
     no action from them -- so one tuning run covers a mixed population and
-    there is no per-agent best-response game to chase. Supply parameters with
-    a leading agent axis if you want per-household values anyway.
+    there is no per-agent best-response game to chase.
+
+    Sharing is literal: the harness vmaps ``fn`` with ``in_axes=None`` on
+    ``params``, so the whole pytree is broadcast to every household
+    *unchanged*. Giving a leaf a leading agent axis does not hand each
+    household its own entry -- every household receives the full array, and a
+    controller written for scalars fails on the shape rather than staggering.
+
+    Per-household values come from the carry instead: draw one from the
+    household's own ``key`` on the first interval and hold it there. That is
+    the ``offset_h`` recipe under "A per-household constant" in
+    ``CONTROLLER_COOKBOOK.md``, and it is how deliberate staggering -- a
+    different ``charge_after_hour`` per roof -- is written here::
+
+        offset_h = jnp.where(carry.intervals == 0,
+                             jax.random.uniform(key, maxval=params["spread_h"]),
+                             carry.offset_h)
+        charging_allowed = obs.hour >= params["charge_after_hour"] + offset_h
+
+    ``spread_h`` stays shared and tunable; what each household draws from it
+    is its own.
     """
 
     name: str

@@ -27,6 +27,7 @@ import numpy as np
 import pytest
 
 from sandbox.controller import (
+    Controller,
     LocalObservation,
     Memory,
     base_controller,
@@ -116,6 +117,82 @@ def test_a_controller_cannot_reach_a_neighbour(population, env) -> None:
         env=env,
     )
     assert shapes and all(shape == () for shape in shapes)
+
+
+def test_params_arrive_whole_and_are_never_split_per_household(population, env) -> None:
+    """The other half of the vmap contract. `params` is mapped with
+    `in_axes=None`, so the pytree is broadcast to every household unchanged --
+    a leaf with a leading agent axis arrives intact, it is not sliced into a
+    per-agent value. Pins `Controller`'s docstring, which used to promise the
+    opposite."""
+    probe = jnp.arange(population.num_agents, dtype=jnp.float32) + 1.0
+
+    def spy(obs, carry, params, key):
+        # A per-agent slice would be a scalar. The whole array is what arrives.
+        chex.assert_shape(params["probe"], (population.num_agents,))
+        return jnp.sum(params["probe"]), carry
+
+    for fast in (True, False):
+        trajectory = rollout(
+            base_controller().replace(fn=spy),
+            population,
+            jax.random.PRNGKey(0),
+            n_steps=2,
+            env=env,
+            params={"probe": probe},
+            fast=fast,
+        )
+        # Every household asked for the same number: the sum of the whole array.
+        assert bool(jnp.allclose(trajectory.p_inv_set_kw, float(probe.sum())))
+
+
+@chex.dataclass(frozen=True)
+class StaggerMemory:
+    """A carry that holds one draw, per the cookbook's `offset_h` recipe."""
+
+    offset_h: chex.Array
+    intervals: chex.Array
+
+
+def test_a_per_household_constant_comes_from_the_carry(population, env) -> None:
+    """The route that does work, and the one `Controller`'s docstring and
+    CONTROLLER_COOKBOOK.md ("A per-household constant") both point at: draw
+    from the household's own key on the first interval, hold it in the carry.
+    A shared, tunable `spread_h` then produces a different offset per roof --
+    which is what staggering `charge_after_hour` needs, and what supplying
+    per-agent params cannot give."""
+
+    def stagger(obs, carry, params, key):
+        del obs
+        offset_h = jnp.where(
+            carry.intervals == 0,
+            jax.random.uniform(key, maxval=params["spread_h"]),
+            carry.offset_h,
+        )
+        # Returned as the setpoint only so the draw is readable off the
+        # trajectory; the environment projects it like any other request.
+        return offset_h, StaggerMemory(offset_h=offset_h, intervals=carry.intervals + 1)
+
+    spread_h = 4.0
+    controller = Controller(
+        name="staggered",
+        fn=stagger,
+        params={"spread_h": jnp.float32(spread_h)},
+        init_carry=lambda: StaggerMemory(offset_h=jnp.float32(0.0), intervals=jnp.int32(0)),
+    )
+    runs = [
+        rollout(controller, population, jax.random.PRNGKey(3), n_steps=6, env=env, fast=fast)
+        for fast in (True, False)
+    ]
+    offsets = runs[0].p_inv_set_kw
+
+    # Drawn once and held: a start hour that rerolls every interval is not a
+    # start hour.
+    assert bool(jnp.allclose(offsets, offsets[0]))
+    assert bool(jnp.all((offsets >= 0.0) & (offsets <= spread_h)))
+    # ...and different per household. That is the staggering.
+    assert float(jnp.std(offsets[0])) > 0.5
+    chex.assert_trees_all_close(runs[0].p_inv_set_kw, runs[1].p_inv_set_kw, atol=1e-5)
 
 
 def test_any_action_at_all_is_survivable(population, env) -> None:

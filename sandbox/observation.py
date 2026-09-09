@@ -20,23 +20,23 @@ The three quantities, and why they are not the same number
 This is the single most important thing on the household side, and the one
 most easily got wrong::
 
-    p_inv_kw  (you choose)  -  load_kw  (you don't)  =  p_grid_kw  (you're billed on)
+    p_inv_kw  (you choose)  -  p_load_kw  (you don't)  =  p_grid_kw  (you're billed on)
 
 * **``p_inv_kw``** is what your controller **returns**: active power out of
   the *inverter*, positive when it is producing. Solar and battery both sit
   behind it, and the inverter serves solar first, so asking for more than
   the roof is making discharges the battery and asking for less charges it.
   It is bounded by ``p_inv_min_kw`` / ``p_inv_max_kw``.
-* **``load_kw``** is the household's own consumption, sitting behind the same
+* **``p_load_kw``** is the household's own consumption, sitting behind the same
   meter. Nobody controls it here -- it is a stochastic profile, and it is
-  already known one interval ahead as ``load_forecast_kw``.
+  already known one interval ahead as ``p_load_forecast_kw``.
 * **``p_grid_kw``** is the net exchange with the grid, ``p_inv_kw -
-  load_kw``. **This is the quantity every tariff settles**, the quantity the
+  p_load_kw``. **This is the quantity every tariff settles**, the quantity the
   feeder actually carries, and the quantity ``GridView`` publishes to the
   tariff as ``p_grid_kw`` / ``e_grid_kwh``. Your controller never sets it
   directly; it sets ``p_inv_kw`` and the subtraction happens for it.
 
-So "export nothing this interval" is ``p_inv_kw = load_forecast_kw``, not
+So "export nothing this interval" is ``p_inv_kw = p_load_forecast_kw``, not
 ``p_inv_kw = 0`` -- returning zero means idling the inverter and importing
 the entire load. The observation reports last interval's realized exchange
 as ``p_grid_kw``, so a controller can see what its last request actually
@@ -105,9 +105,31 @@ through the carry (memory, hysteresis, staggering), through ``key``
 (deliberate desynchronisation), or, from the other seam, through a tariff
 that creates locational distinctions the voltages do not.
 
-Units
------
+Units, and how a field name tells you what it is
+------------------------------------------------
 Power in **kW**, energy in **kWh**, money in **CHF**, voltage in **per unit**.
+
+The suffix carries the physics, the way it does on a datasheet: ``_kw`` is
+**active** power, ``_kvar`` **reactive**, ``_kva`` **apparent**, with
+``_kwh`` / ``_kvarh`` the matching energies. Where both halves exist at the
+same terminal the name also carries a ``p_`` / ``q_`` prefix so the pair
+reads together -- ``p_grid_kw`` beside ``q_grid_kvar``, ``p_inv_kw`` beside
+the reactive power Q(U) sets. Quantities that are inherently active-only get
+no prefix: a roof (``pv_available_kw``) and a battery (``soc_kwh``,
+``bat_charge_max_kw``) have no reactive half to distinguish them from.
+
+**The household seam is active power only, on purpose.** On a Swiss LV
+connection the reactive axis is not the household's to choose: the Q(U) grid
+code (NE7 4.3.2) sets the inverter's reactive power from the voltage at its
+own bus, which is why the environment's action space is one-dimensional here
+rather than two. What that leaves the controller is ``p_inv_kw``, and what
+it costs is apparent-power headroom: ``p_inv_min_kw`` / ``p_inv_max_kw`` are
+the active slice that survives once Q(U) has claimed its share. They sit
+below the inverter's nameplate on about 91 % of intervals -- sometimes
+because the roof and battery have nothing more to give, sometimes because
+Q(U) has taken the headroom -- which is why an action is judged against them
+and not against the datasheet. The tariff seam does see reactive power, as
+``q_grid_kvar`` on :class:`GridView`; read its warning before pricing it.
 
 `gll_env` works internally in energy-per-interval (kWh per 15 minutes), which
 is right for a simulator and wrong for a person: a datasheet says 8 kWp and a
@@ -163,15 +185,15 @@ class LocalObservation:
             of nominal. EN 50160 wants this inside 0.9-1.1; above ~1.05 your
             neighbourhood is exporting hard, below ~0.95 it is drawing hard.
         p_grid_kw: **Realized.** Net power exchanged with the grid over the
-            interval that just ended -- ``p_inv_kw - load_kw``, positive when
+            interval that just ended -- ``p_inv_kw - p_load_kw``, positive when
             you were injecting. **This is the quantity you are billed on.**
             Your controller does not set it directly; it sets ``p_inv_kw``.
-        load_kw: **Realized.** Your own consumption over the interval that
+        p_load_kw: **Realized.** Your own consumption over the interval that
             just ended, behind the same meter. Not controllable.
-        load_forecast_kw: **Forecast.** Your consumption over the *coming*
+        p_load_forecast_kw: **Forecast.** Your consumption over the *coming*
             interval -- the one you are about to act in. Returning
-            ``p_inv_kw = load_forecast_kw`` is what drives ``p_grid_kw`` to
-            zero; returning ``load_kw`` instead leaves whatever the load
+            ``p_inv_kw = p_load_forecast_kw`` is what drives ``p_grid_kw`` to
+            zero; returning ``p_load_kw`` instead leaves whatever the load
             changed by, one interval late.
         pv_available_kw: **Forecast.** The most your roof can produce in the
             coming interval. Not a commitment -- unused generation is
@@ -205,8 +227,8 @@ class LocalObservation:
     time_cos: chex.Array
     voltage_pu: chex.Array
     p_grid_kw: chex.Array
-    load_kw: chex.Array
-    load_forecast_kw: chex.Array
+    p_load_kw: chex.Array
+    p_load_forecast_kw: chex.Array
     pv_available_kw: chex.Array
     soc_kwh: chex.Array
     soc_headroom_kwh: chex.Array
@@ -226,8 +248,8 @@ class LocalObservation:
             "time_cos": self.time_cos,
             "voltage_pu": self.voltage_pu,
             "p_grid_kw": self.p_grid_kw,
-            "load_kw": self.load_kw,
-            "load_forecast_kw": self.load_forecast_kw,
+            "p_load_kw": self.p_load_kw,
+            "p_load_forecast_kw": self.p_load_forecast_kw,
             "pv_available_kw": self.pv_available_kw,
             "soc_kwh": self.soc_kwh,
             "soc_headroom_kwh": self.soc_headroom_kwh,
@@ -283,8 +305,8 @@ def to_local(
         time_cos=jnp.broadcast_to(jnp.asarray(clock.time_cos), (num_agents,)),
         voltage_pu=voltage_pu,
         p_grid_kw=jnp.take(jnp.asarray(prosumer.p_pq_realized), pq) / step_h,
-        load_kw=jnp.take(jnp.asarray(load.p_load_realized), pq) / step_h,
-        load_forecast_kw=jnp.take(jnp.asarray(load.p_load_forecast), pq) / step_h,
+        p_load_kw=jnp.take(jnp.asarray(load.p_load_realized), pq) / step_h,
+        p_load_forecast_kw=jnp.take(jnp.asarray(load.p_load_forecast), pq) / step_h,
         pv_available_kw=jnp.asarray(solar.sol_request_max) / step_h,
         soc_kwh=jnp.asarray(battery.bat_full),
         soc_headroom_kwh=jnp.asarray(battery.bat_free),
@@ -356,8 +378,32 @@ class GridView:
             moves it. A locational price wants the SENSITIVITY of the binding
             quantity to that household's own injection; this is an input to
             estimating that, not the answer.
-        transformer_kw: () Throughput at the substation, positive when the
-            feeder draws from the grid and negative when it exports.
+        q_grid_kvar: (num_pq,) Reactive power at each connection point, the
+            reactive counterpart of `p_grid_kw`. Real, measured, and a real
+            cost to the network -- reactive current heats the same conductors
+            as active current, which is why it shows up inside `losses_kw`.
+
+            **Read the same warning as `voltage_pu` before pricing it.** On a
+            Swiss LV feeder a household does not choose its reactive power:
+            the Q(U) grid code sets the inverter's share from the voltage at
+            its own bus (NE7 4.3.2), and the rest is the load's own power
+            factor. Charging a connection point for it is therefore charging
+            exposure rather than contribution -- the household can only move
+            it indirectly, by changing the active power that moves its
+            voltage. If what you want is to price the cost reactive flow
+            imposes, `losses_kw` already contains it and is caused by
+            everybody together.
+
+            Measured on the reference week: the agents' connection points
+            carry more than 0.1 kvar on 90 % of intervals, averaging
+            -1.03 kvar and reaching -6.4 kvar.
+        transformer_kw: () Active throughput at the substation, positive when
+            the feeder draws from the grid and negative when it exports.
+        transformer_kvar: () Reactive throughput at the substation. A
+            transformer is rated in kVA, so what its thermal limit actually
+            sees is ``hypot(transformer_kw, transformer_kvar)`` -- worth
+            knowing if you are pricing substation loading rather than active
+            energy.
         losses_kw: () What the network itself consumed. Quadratic in flow, so
             synchronised behaviour costs more than its average suggests.
         hour: () Hour of the settled interval, 0 to 24.
@@ -383,8 +429,10 @@ class GridView:
 
     e_grid_kwh: chex.Array
     p_grid_kw: chex.Array
+    q_grid_kvar: chex.Array
     voltage_pu: chex.Array
     transformer_kw: chex.Numeric
+    transformer_kvar: chex.Numeric
     losses_kw: chex.Numeric
     hour: chex.Numeric
     fair_leg_chf: chex.Array
@@ -398,8 +446,10 @@ class GridView:
         return {
             "e_grid_kwh": self.e_grid_kwh,
             "p_grid_kw": self.p_grid_kw,
+            "q_grid_kvar": self.q_grid_kvar,
             "voltage_pu": self.voltage_pu,
             "transformer_kw": self.transformer_kw,
+            "transformer_kvar": self.transformer_kvar,
             "losses_kw": self.losses_kw,
             "hour": self.hour,
             "fair_leg_chf": self.fair_leg_chf,
@@ -425,12 +475,15 @@ def to_grid_view(
     num_pq = jnp.asarray(pq_id).shape[0]
     inverter_id = jnp.asarray(env_model.prosumer.inverter_id, dtype=jnp.int32)
 
-    e_grid_kwh = jnp.real(new_state.prosumer_state.s_pq_realized_kvah)
+    s_grid_kvah = new_state.prosumer_state.s_pq_realized_kvah
+    e_grid_kwh = jnp.real(s_grid_kvah)
     return GridView(
         e_grid_kwh=e_grid_kwh,
         p_grid_kw=e_grid_kwh / step_h,
+        q_grid_kvar=jnp.imag(s_grid_kvah) / step_h,
         voltage_pu=jnp.abs(new_state.grid_state.bus_voltage_pu)[pq_id],
         transformer_kw=grid.pu_to_kw(jnp.real(injection_pu)[slack]),
+        transformer_kvar=grid.pu_to_kw(jnp.imag(injection_pu)[slack]),
         losses_kw=grid.pu_to_kw(jnp.sum(jnp.real(injection_pu))),
         fair_leg_chf=(
             jnp.zeros_like(e_grid_kwh)

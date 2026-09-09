@@ -54,8 +54,12 @@ def to_dataframe(
         ``household`` -- its type: tenant, pv_only, pv_battery, large_flex.
         ``distance_rank`` -- 0 nearest the transformer, 17 furthest.
         ``has_inverter`` -- False for the six tenants.
-        ``p_grid_kw`` -- net power exchanged with the grid (inverter output
-        minus household load), positive when injecting. The billed quantity.
+        ``p_grid_kw`` -- net active power exchanged with the grid (inverter
+        output minus household load), positive when injecting. The billed
+        quantity.
+        ``q_grid_kvar`` -- its reactive counterpart, mostly set by the Q(U)
+        grid code and the load's power factor rather than chosen. Not billed
+        by the baseline tariff.
         ``settlement_chf`` -- what it earned (positive) or paid (negative).
         ``voltage_pu`` -- voltage at its own bus.
         ``p_inv_set_kw`` / ``pv_available_kw`` / ``pv_realized_kw`` -- agents
@@ -94,6 +98,7 @@ def to_dataframe(
             "distance_rank": [population.distance_rank[pq] for pq in connection],
             "has_inverter": np.tile(has_inverter, n_steps),
             "p_grid_kw": (np.asarray(trajectory.e_grid_kwh) / step_duration_h()).reshape(-1),
+            "q_grid_kvar": (np.asarray(trajectory.q_grid_kvarh) / step_duration_h()).reshape(-1),
             "settlement_chf": np.asarray(trajectory.settlement_chf).reshape(-1),
             "voltage_pu": voltage[:, bus_of_pq].reshape(-1),
             "p_inv_set_kw": per_agent(trajectory.p_inv_set_kw),

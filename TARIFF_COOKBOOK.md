@@ -26,13 +26,18 @@ below); a stateless tariff just returns it unchanged.
 
 ## What you are settling
 
-`e_grid_kwh` — the net energy exchanged with the grid at each connection
-point over the interval. That is **inverter output minus household load**:
-the meter reading, not the inverter's own production and not the
+`e_grid_kwh` — the net **active** energy exchanged with the grid at each
+connection point over the interval. That is **inverter output minus household
+load**: the meter reading, not the inverter's own production and not the
 household's own consumption. A household chooses its inverter setpoint and
 is billed on what that came to once its own load was served. (The household
 side calls the same quantity `p_grid_kw`; see
 [`CONTROLLER_COOKBOOK.md`](CONTROLLER_COOKBOOK.md).)
+
+Units carry the physics: `_kw` is active, `_kvar` reactive, `_kva` apparent,
+`_kwh`/`_kvarh` the matching energies, with a `p_`/`q_` prefix wherever both
+halves exist at the same terminal. Reactive flow is visible to a tariff — see
+below — but it is not what the baseline settles.
 
 ## What you can see
 
@@ -41,10 +46,12 @@ state, no per-unit conversions, no bus-versus-connection-point index hops.
 
 | field | shape | unit | meaning |
 |---|---|---|---|
-| `e_grid_kwh` | `(18,)` | kWh | net exchange with the grid, + = pushed in |
+| `e_grid_kwh` | `(18,)` | kWh | net **active** exchange with the grid, + = pushed in |
 | `p_grid_kw` | `(18,)` | kW | the same, as a power |
+| `q_grid_kvar` | `(18,)` | kvar | its **reactive** counterpart — see the warning below |
 | `voltage_pu` | `(18,)` | pu | voltage at each connection point — see the warning below |
-| `transformer_kw` | scalar | kW | substation throughput, + = the feeder drawing, - = exporting |
+| `transformer_kw` | scalar | kW | substation active throughput, + = the feeder drawing, - = exporting |
+| `transformer_kvar` | scalar | kvar | substation reactive throughput |
 | `losses_kw` | scalar | kW | what the network itself burned — quadratic in flow |
 | `hour` | scalar | h | 0–24, the settled interval |
 | `fair_leg_chf` | `(18,)` | CHF | the **whole settlement** fair LEG would produce this interval |
@@ -68,6 +75,40 @@ never driven by anything but load). Keep it to that use. Pricing what a
 connection point *did* — its flow, its voltage — belongs to `e_grid_kwh` /
 `voltage_pu`; `has_inverter` is not a channel for smuggling behavioural
 information a tariff isn't supposed to have.
+
+## Reactive power: you can see it, be careful pricing it
+
+Unlike a household, a network operator measures reactive flow, so `GridView`
+gives you `q_grid_kvar` per connection point and `transformer_kvar` at the
+substation. It is not a rounding error here — the agents' connection points
+carry more than 0.1 kvar on **90 %** of intervals, averaging −1.03 kvar and
+reaching −6.4 kvar.
+
+**But it is almost entirely not chosen.** On a Swiss LV connection the Q(U)
+grid code (NE7 §4.3.2) sets each inverter's reactive power from the voltage
+at its own bus, and the remainder is the load's own power factor. A household
+can move it only indirectly, by changing the active power that moves its
+voltage. So a charge on `q_grid_kvar` is the reactive version of a charge on
+`voltage_pu`: it prices **exposure, not contribution**, and gives almost no
+marginal incentive. Read "Exposure is not contribution" below — it applies
+here word for word.
+
+Two places where reactive is genuinely worth reaching for:
+
+- **Losses.** Reactive current heats the same conductors as active current,
+  so the cost reactive flow imposes is already inside `losses_kw` — and
+  `losses_kw` is caused by everybody together, which is the honest thing to
+  share out.
+- **Substation loading.** A transformer is rated in **kVA**, not kW, so what
+  its thermal limit actually sees is `hypot(transformer_kw,
+  transformer_kvar)`. A demand charge written against apparent power is more
+  faithful to the binding constraint than one written against active power
+  alone.
+
+The baseline does not bill reactive, and neither do real Swiss LV residential
+tariffs — reactive charges appear on larger commercial connections. Your
+tariff returns a whole settlement, so it *may* price whatever it can see. It
+just has to be able to say what behaviour it is trying to change.
 
 ## What fair LEG is, and is not
 

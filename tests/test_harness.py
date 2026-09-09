@@ -68,7 +68,7 @@ def test_the_controller_is_handed_a_price_free_observation(population, env) -> N
 
     def spy(obs, carry, params, key):
         seen.append(obs)
-        return obs.load_kw, carry
+        return obs.p_load_kw, carry
 
     rollout(
         base_controller().replace(fn=spy),
@@ -86,8 +86,8 @@ def test_the_controller_is_handed_a_price_free_observation(population, env) -> N
         "time_cos",
         "voltage_pu",
         "p_grid_kw",
-        "load_kw",
-        "load_forecast_kw",
+        "p_load_kw",
+        "p_load_forecast_kw",
         "pv_available_kw",
         "soc_kwh",
         "soc_headroom_kwh",
@@ -106,7 +106,7 @@ def test_a_controller_cannot_reach_a_neighbour(population, env) -> None:
 
     def spy(obs, carry, params, key):
         shapes.append(jnp.shape(obs.voltage_pu))
-        return obs.load_kw, carry
+        return obs.p_load_kw, carry
 
     rollout(
         base_controller().replace(fn=spy),
@@ -314,11 +314,17 @@ def test_the_grid_view_is_plain_si_over_connection_points(population, env) -> No
     grid = to_grid_view(model, new_state)
 
     chex.assert_shape(grid.e_grid_kwh, (population.num_pq,))
+    chex.assert_shape(grid.q_grid_kvar, (population.num_pq,))
     chex.assert_shape(grid.voltage_pu, (population.num_pq,))
     assert 0.8 < float(grid.voltage_pu.min()) and float(grid.voltage_pu.max()) < 1.2
     assert 0.0 <= float(grid.hour) < 24.0
     # kWh and kW must actually differ by the interval length, not be aliases.
     chex.assert_trees_all_close(grid.p_grid_kw * 0.25, grid.e_grid_kwh, atol=1e-5)
+    # Reactive is exposed to the tariff, and is a genuinely separate axis --
+    # a tariff pricing substation loading needs both halves, since a
+    # transformer is rated in kVA.
+    assert float(jnp.abs(grid.q_grid_kvar).max()) > 0.0
+    assert float(jnp.abs(grid.transformer_kvar)) > 0.0
 
 
 def test_the_congestion_charge_only_redistributes(population) -> None:
@@ -405,9 +411,9 @@ def test_the_numpy_tier_agrees_with_the_jax_one(population, env) -> None:
 
     @numpy_controller
     def in_numpy(obs, carry, params):
-        surplus = max(float(obs["pv_available_kw"]) - float(obs["load_kw"]), 0.0)
+        surplus = max(float(obs["pv_available_kw"]) - float(obs["p_load_kw"]), 0.0)
         export = max(surplus - float(obs["bat_charge_max_kw"]), 0.0)
-        target = float(obs["load_kw"]) + export
+        target = float(obs["p_load_kw"]) + export
         if target > float(obs["p_inv_max_kw"]):  # a real Python branch
             target = float(obs["p_inv_max_kw"])
         return target, Memory(

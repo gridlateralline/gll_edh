@@ -207,9 +207,9 @@ def test_violations_can_be_removed_but_not_for_free(env, population) -> None:
 
     def export_capped(obs, carry, params, key):
         del key
-        surplus = jnp.maximum(obs.pv_available_kw - obs.load_kw, 0.0)
+        surplus = jnp.maximum(obs.pv_available_kw - obs.p_load_kw, 0.0)
         export = jnp.maximum(surplus - obs.bat_charge_max_kw, 0.0)
-        target = jnp.minimum(obs.load_kw + export, obs.load_kw + params["cap_kw"])
+        target = jnp.minimum(obs.p_load_kw + export, obs.p_load_kw + params["cap_kw"])
         p_inv_kw = clip_to_feasible(target, obs)
         return p_inv_kw, update_memory(carry, obs, p_inv_kw)
 

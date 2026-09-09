@@ -33,7 +33,7 @@ the compiled rollout. You get real ``if``, real loops, real SciPy, and working
     def my_rule(obs, carry, params):
         if obs["voltage_pu"] > 1.02:          # a real branch
             return 0.0, carry
-        return float(obs["load_kw"]), carry
+        return float(obs["p_load_kw"]), carry
 
     @numpy_tariff
     def my_price(grid, carry, params):

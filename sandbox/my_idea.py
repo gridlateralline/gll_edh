@@ -26,12 +26,16 @@ and ``TARIFF_COOKBOOK.md`` are the complete reference for each seam.
 
 The one identity to keep in your head::
 
-    p_inv_kw  (you choose)  -  load_kw  (you don't)  =  p_grid_kw  (you're billed on)
+    p_inv_kw  (you choose)  -  p_load_kw  (you don't)  =  p_grid_kw  (you're billed on)
 
 Your controller sets the **inverter**'s active power. The household's own load
 sits behind the same meter, so what the feeder carries -- and what the tariff
 settles -- is the difference. ``p_inv_kw = 0`` means an idle inverter and a
-full import; ``p_inv_kw = obs.load_forecast_kw`` is what zeroes the exchange.
+full import; ``p_inv_kw = obs.p_load_forecast_kw`` is what zeroes the exchange.
+
+All three are active power: ``_kw`` is active, ``_kvar`` reactive, ``_kva``
+apparent. A household only ever chooses active power here -- the Q(U) grid
+code claims the reactive axis by law -- while a tariff can see both.
 """
 
 import jax.numpy as jnp
@@ -71,7 +75,7 @@ def my_controller(obs, carry, params, key):
 
     Positive = the inverter is producing. This is not the flow at the grid
     connection: your own load sits behind the same meter, so the feeder sees
-    ``p_inv_kw - load_kw`` and that difference is what you are billed on.
+    ``p_inv_kw - p_load_kw`` and that difference is what you are billed on.
 
     `obs` is this household's own meter and nothing else -- no prices, no
     neighbours. Every field is a plain number. The right-hand column says
@@ -84,8 +88,8 @@ def my_controller(obs, carry, params, key):
         obs.p_grid_kw              your net exchange with the grid,
                                    + = injecting -- what you are billed on
                                                                  (last)
-        obs.load_kw                what the house drew           (last)
-        obs.load_forecast_kw       what it will draw             (COMING)
+        obs.p_load_kw                what the house drew           (last)
+        obs.p_load_forecast_kw       what it will draw             (COMING)
         obs.pv_available_kw        what the roof could make      (COMING)
         obs.soc_kwh                energy in the battery
         obs.soc_headroom_kwh       room left in it
@@ -102,7 +106,7 @@ def my_controller(obs, carry, params, key):
     The default below is plain self-consumption: cover your own load, let the
     battery take the rest, export what it cannot hold. It is what every home
     battery ships with, and it is what causes the problem. Note that it acts
-    on ``obs.load_kw`` -- last interval's load -- which is what a real battery
+    on ``obs.p_load_kw`` -- last interval's load -- which is what a real battery
     servoing against its own meter does; see
     :func:`sandbox.controller.self_consumption` for what that lag costs.
     """
@@ -110,14 +114,14 @@ def my_controller(obs, carry, params, key):
 
     charging_allowed = obs.hour >= params["charge_after_hour"]
 
-    surplus_kw = jnp.maximum(obs.pv_available_kw - obs.load_kw, 0.0)
+    surplus_kw = jnp.maximum(obs.pv_available_kw - obs.p_load_kw, 0.0)
     absorbable_kw = jnp.where(charging_allowed, obs.bat_charge_max_kw, 0.0)
     export_kw = jnp.minimum(jnp.maximum(surplus_kw - absorbable_kw, 0.0), params["export_cap_kw"])
 
     # === YOUR IDEA GOES HERE ===================================================
     # Ask for anything at all; it is clipped to what is physically possible, so
     # a controller cannot break the simulation. Some starting points:
-    #   * act on obs.load_forecast_kw instead of obs.load_kw -- the warm-up
+    #   * act on obs.p_load_forecast_kw instead of obs.p_load_kw -- the warm-up
     #   * hold battery capacity back for the evening using obs.hour
     #   * remember something in `carry` and react to a trend, not a level
     #   * subtract what you already know from obs.voltage_pu and act on the
@@ -125,7 +129,7 @@ def my_controller(obs, carry, params, key):
     #   * use `key` to stagger against your neighbours
     # ===========================================================================
 
-    p_inv_kw = clip_to_feasible(obs.load_kw + export_kw, obs)
+    p_inv_kw = clip_to_feasible(obs.p_load_kw + export_kw, obs)
     return p_inv_kw, update_memory(carry, obs, p_inv_kw)
 
 
@@ -148,14 +152,21 @@ def my_tariff(grid, carry, params):
     operator means. Everything is a plain array over the 18 connection
     points::
 
-        grid.e_grid_kwh     net energy each one exchanged with the grid,
-                            + = pushed in. Inverter output minus household
-                            load: the meter reading, not the inverter's.
+        grid.e_grid_kwh     net ACTIVE energy each one exchanged with the
+                            grid, + = pushed in. Inverter output minus
+                            household load: the meter reading, not the
+                            inverter's. This is what the baseline settles.
         grid.p_grid_kw      the same as a power
-        grid.voltage_pu     voltage at each one -- but read "exposure is not
-                            contribution" below before pricing on it
-        grid.transformer_kw  throughput at the substation, + = drawing
-        grid.losses_kw       what the network itself burned
+        grid.q_grid_kvar    its reactive counterpart -- visible to a tariff,
+                            but set by the Q(U) grid code and the load's
+                            power factor rather than chosen. Read "exposure
+                            is not contribution" before pricing it.
+        grid.voltage_pu     voltage at each one -- same warning
+        grid.transformer_kw  active throughput at the substation, + = drawing
+        grid.transformer_kvar  reactive throughput. A transformer is rated in
+                            kVA, so hypot(kw, kvar) is what its limit sees.
+        grid.losses_kw       what the network itself burned -- and where the
+                            cost of reactive flow already shows up
         grid.hour            0 to 24
         grid.fair_leg_chf    the WHOLE settlement the fair-LEG baseline
                              would produce for this interval -- a finished

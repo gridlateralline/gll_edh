@@ -20,19 +20,24 @@ Edit it in place in [`sandbox/my_idea.py`](sandbox/my_idea.py); `check()` and
 ## The one identity to keep in your head
 
 ```
-p_inv_kw  (you choose)  -  load_kw  (you don't)  =  p_grid_kw  (you're billed on)
+p_inv_kw  (you choose)  -  p_load_kw  (you don't)  =  p_grid_kw  (you're billed on)
 ```
 
 You set the **inverter**'s active power. Your own load sits behind the same
 meter and nobody controls it, so what the feeder carries — and what every
 tariff settles — is the difference.
 
+All three are **active** power, in kW. That is what the `p_` says: `_kw` is
+active, `_kvar` reactive, `_kva` apparent, and a `p_`/`q_` prefix appears
+wherever both halves exist at the same terminal. `pv_available_kw` and the
+battery fields carry no prefix because they have no reactive half.
+
 | you want | you return |
 |---|---|
-| export nothing, import nothing | `obs.load_forecast_kw` |
-| export 3 kW to the grid | `obs.load_forecast_kw + 3.0` |
+| export nothing, import nothing | `obs.p_load_forecast_kw` |
+| export 3 kW to the grid | `obs.p_load_forecast_kw + 3.0` |
 | idle the inverter (import the whole load) | `0.0` |
-| charge the battery from the grid at 2 kW | `obs.load_forecast_kw - 2.0` |
+| charge the battery from the grid at 2 kW | `obs.p_load_forecast_kw - 2.0` |
 
 Solar and battery both sit behind that one inverter, and it serves solar
 first: ask for **more** than the roof is making and the battery discharges to
@@ -53,9 +58,9 @@ describe the interval that just **ended** and half the one about to
 | `hour` | h | coming | **the clock.** 0–24, start of the interval you act in |
 | `time_sin`, `time_cos` | — | coming | the same clock, smooth across midnight |
 | `voltage_pu` | pu | last | your own bus, ~0.98 to 1.11 — see below |
-| `p_grid_kw` | kW | last | your net exchange with the grid, + = injecting. **The billed quantity.** |
-| `load_kw` | kW | last | what the house drew |
-| `load_forecast_kw` | kW | **coming** | what it will draw |
+| `p_grid_kw` | kW | last | your net *active* exchange with the grid, + = injecting. **The billed quantity.** |
+| `p_load_kw` | kW | last | what the house drew |
+| `p_load_forecast_kw` | kW | **coming** | what it will draw |
 | `pv_available_kw` | kW | **coming** | the most your roof can make |
 | `soc_kwh`, `soc_headroom_kwh` | kWh | now | stored, and room left |
 | `bat_charge_max_kw`, `bat_discharge_max_kw` | kW | coming | already limited by state of charge |
@@ -67,10 +72,20 @@ parameters across episodes instead — that is what "anticipate it" means.
 `p_inv_min_kw` / `p_inv_max_kw` bound the **inverter request**, not the grid
 exchange. They already fold in your inverter rating, your grid connection,
 your battery's state and the reactive power Q(U) has committed on your behalf,
-so they are narrower than your nameplate — and they are what an action is
-judged against. Six of the eighteen connection points are tenants with
+so they are narrower than your nameplate — below it on about 91 % of
+intervals — and they are what an action is judged against. Six of the
+eighteen connection points are tenants with
 `p_inv_min_kw == p_inv_max_kw == 0`; your controller runs for them too and
 must survive it.
+
+**One number, not two.** You choose active power and nothing else. On a Swiss
+LV connection the reactive axis is not yours: the Q(U) grid code (NE7 §4.3.2)
+sets your inverter's reactive power from your own bus voltage, which is why
+the action space here is one-dimensional. You feel it only as headroom —
+reactive power consumes apparent-power capacity, and what is left on the
+active axis is exactly `p_inv_min_kw` … `p_inv_max_kw`. Nothing else about it
+is yours to design. (A tariff *can* see reactive flow; see
+[`TARIFF_COOKBOOK.md`](TARIFF_COOKBOOK.md).)
 
 ## Voltage: a thin signal, but a real one
 
@@ -94,7 +109,7 @@ better:
 
 ```python
 # subtract what you already knew; act on the surprise, not the level
-expected_pu = 1.0 + params["k_pv"] * obs.pv_available_kw - params["k_load"] * obs.load_kw
+expected_pu = 1.0 + params["k_pv"] * obs.pv_available_kw - params["k_load"] * obs.p_load_kw
 surprise_pu = obs.voltage_pu - expected_pu
 
 # or use the trend rather than the level -- carry.voltage_ewma_pu is free
@@ -177,7 +192,7 @@ applies.
 
 **No `if` on a traced value.**
 ```python
-p = jnp.where(obs.voltage_pu > 1.02, 0.0, obs.load_kw)   # yes
+p = jnp.where(obs.voltage_pu > 1.02, 0.0, obs.p_load_kw)   # yes
 if obs.voltage_pu > 1.02: ...                            # no
 ```
 
@@ -242,7 +257,7 @@ from sandbox.numpy_bridge import numpy_controller
 def my_controller(obs, carry, params):        # note: no `key` in this tier
     if obs["voltage_pu"] > params["threshold_pu"]:   # a real branch
         return 0.0, carry
-    return float(obs["load_kw"]), carry
+    return float(obs["p_load_kw"]), carry
 ```
 
 `obs` arrives as a dict of plain NumPy scalars — see
@@ -305,7 +320,7 @@ legitimate answer to herding that costs nothing in energy.
 - **Subtract what you already knew** from `obs.voltage_pu` and act on the
   remainder — see "Voltage" above.
 - **Hold back capacity for the evening ramp** using the clock.
-- Use `load_forecast_kw` rather than `load_kw`. Honest accounting: this is
+- Use `p_load_forecast_kw` rather than `p_load_kw`. Honest accounting: this is
   a correctness fix, not a strategy. Measured over twenty weeks it moves
   self-consumption from 29.4 % to 30.3 % and the community bill by about
   3 CHF a week, and it moves peak, ramp and coincidence by nothing at all.

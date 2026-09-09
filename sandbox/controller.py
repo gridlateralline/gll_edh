@@ -24,12 +24,12 @@ inverter is producing.** It is *not* the flow at the grid connection. The
 household's own load sits behind the same meter and nobody controls it, so
 what the feeder sees -- and what every tariff settles -- is::
 
-    p_grid_kw = p_inv_kw - load_kw
+    p_grid_kw = p_inv_kw - p_load_kw
 
 Returning ``p_inv_kw = 0`` idles the inverter and imports the whole load;
-returning ``p_inv_kw = obs.load_forecast_kw`` is what drives the grid
+returning ``p_inv_kw = obs.p_load_forecast_kw`` is what drives the grid
 exchange to zero. :class:`~sandbox.observation.LocalObservation` carries the
-whole picture: ``load_forecast_kw`` for the coming interval, and
+whole picture: ``p_load_forecast_kw`` for the coming interval, and
 ``p_grid_kw`` for what last interval's request actually came to.
 
 The harness ``jax.vmap``s the function over the population. That is not only
@@ -198,8 +198,8 @@ def self_consumption(
     inverter throws it away rather than exporting it. A real household
     exports, so ask for the part of the surplus the battery cannot take.
 
-    **It deliberately uses ``obs.load_kw``, last interval's load, and not
-    ``obs.load_forecast_kw``, the coming one.** That is a real product, not a
+    **It deliberately uses ``obs.p_load_kw``, last interval's load, and not
+    ``obs.p_load_forecast_kw``, the coming one.** That is a real product, not a
     typo: a home battery servos against the net reading its meter is
     reporting *now*, so it always chases the load by one control period.
     Modelling it with the forecast would flatter the installed base and hide
@@ -207,7 +207,7 @@ def self_consumption(
     over twenty weeks: unintended grid exchange of 0.445 kWh per
     agent-interval where the forecast leaves 0.436, self-consumption share
     29.4 % where the forecast reaches 30.3 %, and about 3 CHF a week across
-    the community. Swapping in ``load_forecast_kw`` is the cheapest correct
+    the community. Swapping in ``p_load_forecast_kw`` is the cheapest correct
     edit available -- and, as those numbers say, worth a couple of per cent
     and *nothing at all* on peak, ramp or coincidence. It is a warm-up, not a
     strategy.
@@ -235,11 +235,11 @@ def self_consumption(
     del key
     charging_allowed = obs.hour >= params["charge_after_hour"]
 
-    surplus_kw = jnp.maximum(obs.pv_available_kw - obs.load_kw, 0.0)
+    surplus_kw = jnp.maximum(obs.pv_available_kw - obs.p_load_kw, 0.0)
     absorbable_kw = jnp.where(charging_allowed, obs.bat_charge_max_kw, 0.0)
     export_kw = jnp.minimum(jnp.maximum(surplus_kw - absorbable_kw, 0.0), params["export_cap_kw"])
 
-    p_inv_kw = clip_to_feasible(obs.load_kw + export_kw, obs)
+    p_inv_kw = clip_to_feasible(obs.p_load_kw + export_kw, obs)
     return p_inv_kw, update_memory(carry, obs, p_inv_kw)
 
 

@@ -100,14 +100,14 @@ still turning as one.
 The single most useful thing to fix in your head before writing anything:
 
 ```
-p_inv_kw  (you choose)  -  load_kw  (you don't)  =  p_grid_kw  (you're billed on)
+p_inv_kw  (you choose)  -  p_load_kw  (you don't)  =  p_grid_kw  (you're billed on)
 ```
 
 A controller sets the **inverter**'s active power. The household's own load
 sits behind the same meter and nobody controls it, so what the feeder carries —
 and what every tariff settles, as `grid.e_grid_kwh` — is the difference.
 Returning `0.0` idles the inverter and imports the whole load; returning
-`obs.load_forecast_kw` is what drives the grid exchange to zero.
+`obs.p_load_forecast_kw` is what drives the grid exchange to zero.
 
 Solar and battery both sit behind that one inverter, and it serves solar
 first. Ask for more than the roof is making and the battery discharges; ask
@@ -115,7 +115,21 @@ for less and the surplus charges it. You never address the battery directly.
 
 Everything is SI: **kW**, **kWh**, **CHF**, **per-unit** voltage. Every field
 name carries its unit, because a silent factor of four between kW and kWh is
-the easiest mistake here to make.
+the easiest mistake here to make. The suffix also carries the physics: `_kw`
+is **active** power, `_kvar` **reactive**, `_kva` **apparent**, with a
+`p_`/`q_` prefix wherever both halves exist at the same terminal
+(`p_grid_kw` beside `q_grid_kvar`). Fields with no reactive half — a roof, a
+battery — carry no prefix.
+
+**A controller chooses active power only, and that is the law rather than a
+simplification.** On a Swiss LV connection the Q(U) grid code (NE7 §4.3.2)
+sets the inverter's reactive power from the voltage at its own bus, so the
+action space is one-dimensional. A household feels reactive power only as
+lost headroom: `p_inv_min_kw` / `p_inv_max_kw` are the active slice left once
+Q(U) has taken its share. A *tariff* does see reactive flow — `q_grid_kvar`
+per connection point, `transformer_kvar` at the substation — because a network
+operator measures it. Pricing it is allowed and has a trap in it; see
+[`TARIFF_COOKBOOK.md`](TARIFF_COOKBOOK.md).
 
 ## The two seams
 
@@ -197,9 +211,9 @@ what makes the challenge exist; the tariff is what closes it.
 ```python
 def my_controller(obs, carry, params, key):
     """One household. Returns the INVERTER's active power, in kW."""
-    surplus = jnp.maximum(obs.pv_available_kw - obs.load_forecast_kw, 0.0)
+    surplus = jnp.maximum(obs.pv_available_kw - obs.p_load_forecast_kw, 0.0)
     export = jnp.maximum(surplus - obs.bat_charge_max_kw, 0.0)
-    p_inv_kw = clip_to_feasible(obs.load_forecast_kw + export, obs)
+    p_inv_kw = clip_to_feasible(obs.p_load_forecast_kw + export, obs)
     return p_inv_kw, update_memory(carry, obs, p_inv_kw)
 ```
 

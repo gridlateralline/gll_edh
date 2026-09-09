@@ -25,7 +25,7 @@ voltage, and on a stiff feeder it is smaller than a real meter can resolve.
 
 The regression is deliberately the simplest reading of that sentence: per
 household, ordinary least squares of own ``voltage_pu`` on own
-``pv_available_kw``, own ``load_kw`` and the clock (``time_sin``,
+``pv_available_kw``, own ``p_load_kw`` and the clock (``time_sin``,
 ``time_cos``), with an intercept. Residuals are pooled across households and
 reported as a percentage of nominal voltage, next to the ~0.5 % of nominal a
 Class 1 meter resolves.
@@ -57,7 +57,7 @@ from sandbox.scenarios import EPISODE_STEPS, FEEDER_STRENGTHS, reference_scenari
 METER_RESOLUTION_PCT = 0.5
 
 #: Which fields a household is credited with already knowing.
-REGRESSORS = ("pv_available_kw", "load_kw", "time_sin", "time_cos")
+REGRESSORS = ("pv_available_kw", "p_load_kw", "time_sin", "time_cos")
 
 
 def collect(population, impedance_scale, key, n_steps):

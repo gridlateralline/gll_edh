@@ -342,14 +342,22 @@ def rollout_seeds(
     keys: chex.Array,
     n_steps: int = EPISODE_STEPS,
     params: Optional[Any] = None,
+    env: Optional[ProsumerGrid] = None,
 ) -> Trajectory:
     """Run one episode per key, batched. Adds a leading seed axis to everything.
 
     Scoring on a single episode rewards luck. Because the whole rollout is a
     pure function of its key, an ensemble is one ``vmap`` and costs no more
     engineering than a single run.
+
+    Args:
+        env: Reuse a prebuilt environment, same reason as :func:`rollout` --
+            a caller that also varies controller or tariff across several
+            ensembles (:func:`sandbox.evaluate._mean_score`, one call per
+            cell) should build the environment once per cell, not once per
+            seed inside it.
     """
-    env = build_env(population, time_limit=n_steps)
+    env = env or build_env(population, time_limit=n_steps)
 
     def one(key: chex.PRNGKey) -> Trajectory:
         return rollout(

@@ -67,7 +67,7 @@ import numpy as np
 
 from sandbox.controller import TUNING_GRID, Controller, base_controller
 from sandbox.metrics import Score, compare, fairness, revenue_adequate, score
-from sandbox.rollout import TariffFactory, build_env, rollout
+from sandbox.rollout import TariffFactory, build_env, rollout_seeds
 from sandbox.scenarios import EPISODE_STEPS, Population
 from sandbox.tuning import tune
 
@@ -152,11 +152,26 @@ def _mean_score(
 
     Averaging trajectories first would be wrong: a peak is not linear, and the
     mean of two weeks' flows has a lower peak than either week.
+
+    The rollout is batched over the seed axis with one ``vmap``
+    (:func:`~sandbox.rollout.rollout_seeds`) instead of dispatching a
+    separate ``rollout()`` per seed in a Python loop -- the same "one
+    compile, the whole ensemble at once" shape :func:`sandbox.tuning.tune`
+    already uses for its candidate grid. ``score()`` itself stays untouched
+    and still runs once per seed: several of its fairness and synchrony
+    metrics do a deliberate host round trip (see
+    :func:`sandbox.metrics.flex_synchrony`, :func:`sandbox.metrics.import_share`),
+    and those are cheap reductions on an already-computed trajectory, not
+    the O(n_steps) physics the rollout itself pays for -- so batching the
+    rollout is where the wall-clock actually is.
     """
     env = build_env(population, time_limit=n_steps, tariff=tariff)
+    trajectories = rollout_seeds(
+        controller, population, jax.random.split(key, seeds), n_steps=n_steps, env=env
+    )
     scores = [
-        score(rollout(controller, population, seed, n_steps=n_steps, env=env), population)
-        for seed in jax.random.split(key, seeds)
+        score(jax.tree_util.tree_map(lambda leaf, i=i: leaf[i], trajectories), population)
+        for i in range(seeds)
     ]
     fields = scores[0].to_dict()
     return Score(**{name: float(np.mean([getattr(s, name) for s in scores])) for name in fields})

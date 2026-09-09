@@ -311,9 +311,9 @@ cannot respond to anything.
 | type | n | roof | battery | inverter |
 |---|---|---|---|---|
 | tenant | 6 | — | — | — |
-| pv_only | 5 | 9 kWp | — | 7 kVA |
-| pv_battery | 5 | 12 kWp | 13 kWh | 10 kVA |
-| large_flex | 2 | 15 kWp | 20 kWh | 13 kVA |
+| pv_only | 2 | 9 kWp | — | 7 kVA |
+| pv_battery | 6 | 12 kWp | 13 kWh | 10 kVA |
+| large_flex | 4 | 15 kWp | 20 kWh | 13 kVA |
 
 Inverters are deliberately smaller than the roof — DC/AC ≈ 1.2, which is what
 real installations use and which produces about 2% clipping. It is also

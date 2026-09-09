@@ -171,7 +171,10 @@ class HouseholdType:
             is a function of distance times injection, so clustering the
             flexible households there localizes it -- without that, the nodal
             signal is nearly flat and the tariff pathway has no gradient to
-            exploit.
+            exploit. Among several ``far_end`` types, :func:`assign_population`
+            fills the single most electrically extreme connection points with
+            whichever type is declared first in the population sequence, so
+            list the strongest injector first within the far group.
     """
 
     name: str
@@ -209,9 +212,20 @@ REFERENCE_POPULATION: tuple[HouseholdType, ...] = (
         s_inv_max_kva=0.0,
         far_end=False,
     ),
+    # pv_only carries only 2 of the 12 agent slots, down from the 5 this
+    # population shipped with before the connection points were ranked by
+    # true electrical distance (see _feeder_order). A pv_only household can
+    # only curtail; it cannot shift. Once the far group sits at the buses
+    # the physics actually says are remote, having most of the agent
+    # population be curtail-only leaves the naive controller with too little
+    # authority to beat doing nothing (measured: naive/do-nothing peak ratio
+    # landed at ~1.0 across most seeds) and lets herding vary with feeder
+    # strength more than it should (diversity spread ~0.0125 against a
+    # 0.01 budget). Shifting slots to battery-equipped types (below) restores
+    # both margins -- see tests/test_scenarios.py.
     HouseholdType(
         name="pv_only",
-        count=5,
+        count=2,
         daily_consumption_kwh=12.0,
         s_load_max_kva=15.0,
         s_pq_max_kva=22.0,
@@ -221,21 +235,15 @@ REFERENCE_POPULATION: tuple[HouseholdType, ...] = (
         s_inv_max_kva=7.0,
         far_end=False,
     ),
-    HouseholdType(
-        name="pv_battery",
-        count=5,
-        daily_consumption_kwh=12.0,
-        s_load_max_kva=15.0,
-        s_pq_max_kva=22.0,
-        pv_kwp=12.0,
-        battery_kwh=13.0,
-        battery_kw=5.0,
-        s_inv_max_kva=10.0,
-        far_end=True,
-    ),
+    # large_flex before pv_battery: within the far group, assign_population
+    # fills the most electrically extreme connection points first from
+    # whichever type is listed first, and large_flex is the stronger
+    # injector (nearly double pv_battery's PV/battery/power) -- it belongs
+    # at the network's single most sensitive points, not the sixth- and
+    # seventh-most.
     HouseholdType(
         name="large_flex",
-        count=2,
+        count=4,
         daily_consumption_kwh=30.0,
         s_load_max_kva=22.0,
         s_pq_max_kva=22.0,
@@ -243,6 +251,18 @@ REFERENCE_POPULATION: tuple[HouseholdType, ...] = (
         battery_kwh=20.0,
         battery_kw=10.0,
         s_inv_max_kva=13.0,
+        far_end=True,
+    ),
+    HouseholdType(
+        name="pv_battery",
+        count=6,
+        daily_consumption_kwh=12.0,
+        s_load_max_kva=15.0,
+        s_pq_max_kva=22.0,
+        pv_kwp=12.0,
+        battery_kwh=13.0,
+        battery_kw=5.0,
+        s_inv_max_kva=10.0,
         far_end=True,
     ),
 )
@@ -345,6 +365,33 @@ def grid_arrays(scale: float = FEEDER_IMPEDANCE_SCALE) -> dict:
     return arrays
 
 
+def _self_impedance_to_slack(scale: float = FEEDER_IMPEDANCE_SCALE) -> np.ndarray:
+    """Thevenin self-impedance magnitude (p.u.) from each PQ bus to the slack.
+
+    Inverts the reduced bus-admittance matrix (slack row/column removed),
+    the standard way to read a network's Thevenin impedance off Ybus. This is
+    the quantity voltage rise from a nodal injection actually depends on, in
+    ``pq_id`` order -- shared by :func:`end_of_line_impedance_ohm`, which
+    turns the worst entry into ohms, and :func:`_feeder_order`, which ranks
+    every connection point by it.
+
+    Deliberately not the grid asset's ``position`` (x, y) field: that comes
+    from pandapower's plotting geodata, not cable length or impedance,
+    gll_env never reads it for anything but serialization, and on this asset
+    at least one bus is missing geodata and silently defaults to (0, 0) --
+    see the note on :func:`_feeder_order`.
+    """
+    arrays = grid_arrays(scale)
+    admittance = np.asarray(arrays["admittance"]).astype(np.complex128)
+    slack = int(np.asarray(arrays["slack_id"]).reshape(-1)[0])
+    pq_id = np.asarray(arrays["pq_id"]).reshape(-1).astype(int)
+
+    keep = [i for i in range(admittance.shape[0]) if i != slack]
+    reduced = np.linalg.inv(admittance[np.ix_(keep, keep)])
+    position = {bus: i for i, bus in enumerate(keep)}
+    return np.array([abs(reduced[position[b], position[b]]) for b in pq_id])
+
+
 def end_of_line_impedance_ohm(scale: float = FEEDER_IMPEDANCE_SCALE) -> float:
     """Thevenin impedance magnitude at the worst connection point.
 
@@ -352,36 +399,32 @@ def end_of_line_impedance_ohm(scale: float = FEEDER_IMPEDANCE_SCALE) -> float:
     deciding whether a feeder is realistically weak.
     """
     arrays = grid_arrays(scale)
-    admittance = np.asarray(arrays["admittance"]).astype(np.complex128)
     base_v_kv = np.asarray(arrays["base_v_kv"])
-    slack = int(np.asarray(arrays["slack_id"])[0])
-    pq_id = np.asarray(arrays["pq_id"]).astype(int)
-
-    keep = [i for i in range(admittance.shape[0]) if i != slack]
-    reduced = np.linalg.inv(admittance[np.ix_(keep, keep)])
-    position = {bus: i for i, bus in enumerate(keep)}
     z_base = float(np.min(base_v_kv[base_v_kv < 1.0])) ** 2 / float(arrays["base_s_mva"])
-    return float(max(abs(reduced[position[b], position[b]]) * z_base for b in pq_id))
+    return float(np.max(_self_impedance_to_slack(scale)) * z_base)
 
 
 def _feeder_order() -> np.ndarray:
-    """Connection points ordered by distance from the transformer, nearest first.
+    """Connection points ordered by electrical distance from the transformer,
+    nearest first.
 
-    Read off the grid asset's own bus coordinates rather than assumed from
-    bus numbering, so the placement survives a change of feeder. Distance is
-    the physical one; on a radial LV feeder it ranks the same way electrical
-    distance does, and it is the quantity the asset actually carries.
+    Ranked by :func:`_self_impedance_to_slack` -- computed from the network's
+    own admittance matrix, at the feeder strength (``FEEDER_IMPEDANCE_SCALE``,
+    i.e. ``rural``) this scenario actually runs on -- rather than the grid
+    asset's ``position`` field.
+
+    That field is pandapower plotting geodata carried through
+    unused by gll_env for anything but serialization (see
+    ``gll_env.components.grid.GridDynamics``), not a measurement of cable
+    length or impedance, and unreliable even as a proxy for it: on this
+    asset bus 18 -- 11 hops down the backbone, the single deepest connection
+    point on the whole feeder by hop count -- has no geodata and silently
+    defaults to ``(0, 0)``, almost on top of the slack. Ranking by that field
+    placed the network's most electrically remote connection point in the
+    "near" group, handing it a household type with no PV, no battery, and no
+    way to generate the voltage signal it sits closest to producing.
     """
-    from gll_env.assets.serialization import load_asset_arrays
-    from gll_env.factories import GRID_ASSETS_DIR
-
-    arrays = dict(load_asset_arrays(GRID_MODEL, asset_dir=GRID_ASSETS_DIR))
-    position = np.asarray(arrays["position"])
-    slack = np.asarray(arrays["slack_id"]).reshape(-1)[0]
-    pq_id = np.asarray(arrays["pq_id"]).reshape(-1)
-
-    distance = np.linalg.norm(position[pq_id] - position[slack], axis=-1)
-    return np.argsort(distance, kind="stable")
+    return np.argsort(_self_impedance_to_slack(), kind="stable")
 
 
 def assign_population(

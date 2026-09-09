@@ -308,12 +308,19 @@ CIGRE low-voltage, 19 buses, 18 connection points, 15-minute intervals, seven
 days. Twelve households have an inverter and are agents; six are tenants who
 cannot respond to anything.
 
-| type | n | roof | battery | inverter |
-|---|---|---|---|---|
-| tenant | 6 | — | — | — |
-| pv_only | 2 | 9 kWp | — | 7 kVA |
-| pv_battery | 6 | 12 kWp | 13 kWh | 10 kVA |
-| large_flex | 4 | 15 kWp | 20 kWh | 13 kVA |
+| type | n | bus idx | roof | battery | inverter |
+|---|---|---|---|---|---|
+| tenant | 6 | 1–6 | — | — | — |
+| pv_only | 2 | 7, 11 | 9 kWp | — | 7 kVA |
+| pv_battery | 6 | 8, 9, 10, 12, 16, 17 | 12 kWp | 13 kWh | 10 kVA |
+| large_flex | 4 | 13, 14, 15, 18 | 15 kWp | 20 kWh | 13 kVA |
+
+Bus 0 is the slack (the transformer); buses 1–18 are the 18 PQ connection
+points, placed by electrical distance from the slack — nearest first, so
+`tenant` sits closest and `large_flex`/`pv_battery` sit at the far end where
+a nodal injection moves voltage the most. Placement is deterministic
+(`sandbox.scenarios.assign_population`), not random, so every submission is
+scored on the same feeder.
 
 Inverters are deliberately smaller than the roof — DC/AC ≈ 1.2, which is what
 real installations use and which produces about 2% clipping. It is also

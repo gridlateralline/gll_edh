@@ -138,12 +138,19 @@ the question the challenge is actually about.
 
 This trips up almost everyone. **No household can see a price during an
 episode**, so running your tariff against an unchanged controller changes the
-settlement column and *nothing physical* — identical peaks, identical ramps,
+settlement and *nothing physical* — identical peaks, identical ramps,
 identical everything. That is not your tariff failing; it is what a tariff
 is.
 
+What `check()` *can* show you is the second table it prints, `CHF/kWh
+consumed, by household type`. Redistribution needs no behavioural response to
+be visible, so the incidence of your tariff — who is now paying for the
+network, and whether the households with no way to respond are carrying it —
+is legible in ten seconds. That is worth iterating on well before you spend
+two minutes on a `score()`.
+
 `check()` does not tune. **`score()` does**, and it is the only thing that can
-show a tariff working. Budget about two minutes for it.
+show a tariff moving the *feeder*. Budget about two minutes for it.
 
 ## Exposure is not contribution
 
@@ -454,6 +461,24 @@ concluding your idea does not move anybody.
 - [ ] Tenants (`p_inv_min_kw == p_inv_max_kw == 0`, absent from any
       agent-indexed array) are not silently harmed by a rule written with
       prosumers in mind
+- [ ] The fairness table reads defensibly: `tenant` CHF/kWh has not gone up to
+      buy the network columns, and `spread` between the four household types
+      has not widened much. A flat feeder paid for by the six households with
+      no roof is a result you have to be willing to defend to a regulator
+- [ ] **Would all five parties sign it?** The four household types and the
+      network operator. Go through them one at a time against the fairness
+      table. If one would refuse, either fix it or narrow the tariff to a
+      voluntary rate class that everyone inside it would join — and then show
+      the customers outside it are no worse off. Both are legitimate answers;
+      a universal tariff that quietly loses somebody is not
+- [ ] A household could **anticipate** your price from what it knows in
+      advance — the clock, the weather, its own load and state of charge. If
+      responding correctly requires knowing what the neighbours did, the
+      tariff redistributes after the fact and steers nothing
+- [ ] `tenant_import` — the tenants' share of everything the feeder imports —
+      is the cost base your charge is recovered from. If your tariff lets
+      self-supplying households shrink out of it, say what happens to the
+      households left behind
 - [ ] `has_inverter`, if used, only ever expresses static rate-class intent —
       never a stand-in for a live reading `e_grid_kwh`/`voltage_pu` already
       gives you

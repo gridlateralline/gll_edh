@@ -32,8 +32,11 @@ dev = [
     "pre-commit",
     "jupyter>=1.1.1",
     "matplotlib>=3.9",
-    # jumanji switches the matplotlib backend to ipympl on import inside
-    # IPython, so every notebook fails at the first import without it.
+    # jumanji runs `%matplotlib ipympl` on import inside IPython, and the
+    # magic raises if ipympl is absent -- so every notebook would fail at its
+    # first `import gll_env` without this. The notebooks switch back to
+    # `inline` afterwards: the widget backend needs a JS bundle per figure and
+    # renders an empty box when it cannot fetch one.
     "ipympl>=0.9",
     "nbclient",
     "pyarrow",

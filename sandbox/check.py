@@ -28,7 +28,7 @@ import jax.numpy as jnp
 
 from sandbox.controller import Controller, base_controller, init_memory
 from sandbox.evaluate import Submission, evaluate
-from sandbox.metrics import compare, score
+from sandbox.metrics import compare, fairness, score
 from sandbox.rollout import build_env, rollout
 from sandbox.scenarios import STEPS_PER_DAY, reference_scenario
 from sandbox.tariff import tariff_from_settlement
@@ -105,6 +105,8 @@ def run_check(
         rows[label] = score(trajectory, population)
 
     print(compare(rows, detail=detail))
+    print()
+    print(fairness(rows))
     _verdict(rows["reference"], rows["yours"])
     print(
         f"\n  one weather, {days} day(s), no tuning -- rough. `score()` runs the real thing."
@@ -138,42 +140,66 @@ def run_score(detail: bool = True, seeds: int = 20) -> None:
     )
     evaluation = evaluate(submission, population, seeds=seeds)
     print(evaluation if detail else compare(evaluation.cells, detail=False))
+    if not detail:
+        print()
+        print(fairness(evaluation.cells))
     _verdict(evaluation.cells["fair_leg/base"], evaluation.cells["submitted/submitted"])
 
 
-#: Rows of the plain-words verdict: label, Score field, unit, and the sign of
-#: "better".
+#: Rows of the plain-words verdict: label, Score field, unit, the sign of
+#: "better", and whether the row is *physical*.
+#:
+#: The two fairness rows are here rather than only in the table because they
+#: are the rows a *tariff* moves. Everything above them is a feeder quantity
+#: that a controller edit changes and a price alone cannot, so a tariff author
+#: reading only the top of the list would conclude nothing had happened.
+#:
+#: They are flagged non-physical for one reason: the "nothing has moved yet"
+#: notice below asks whether the *simulation* is unchanged, and the shipped
+#: default tariff redistributes from the first run. Counting fairness into
+#: that check would suppress a notice a first-time reader needs.
 _VERDICT_ROWS = (
-    ("solar exported at the worst moment", "transformer_export_peak_kw", "kW", -1),
-    ("worst sudden swing (herding)", "max_ramp_kw", "kW", -1),
-    ("everyone acting at once", "coincidence_factor", "", -1),
-    ("solar thrown away", "curtailed_share", "%", -1),
-    ("what the households earned", "community_settlement_chf", "CHF", +1),
+    ("solar exported at the worst moment", "transformer_export_peak_kw", "kW", -1, True),
+    ("work squeezed into the peak interval", "peak_to_average", "", -1, True),
+    ("worst sudden swing (herding)", "max_ramp_kw", "kW", -1, True),
+    ("everyone acting at once", "coincidence_factor", "", -1, True),
+    ("solar thrown away", "curtailed_share", "%", -1, True),
+    ("what the households earned", "community_settlement_chf", "CHF", +1, True),
+    ("what a tenant paid per kWh", "tenant_cost_per_kwh_chf", "CHF", -1, False),
+    ("cost base left to tenants", "tenant_import_share", "%", -1, False),
 )
 
 
 def _verdict(reference, yours) -> None:
-    """Five numbers, in plain words, with the direction that counts as better."""
+    """The headline numbers in plain words, with the direction that counts as better."""
     print()
     unchanged = 0
-    for label, field, unit, better in _VERDICT_ROWS:
+    physical = 0
+    for label, field, unit, better, is_physical in _VERDICT_ROWS:
         was, now = getattr(reference, field), getattr(yours, field)
         if unit == "%":
             was, now = was * 100, now * 100
         change = now - was
         # Relative, because "unchanged" arrives as a float difference of 1e-6.
         negligible = abs(change) <= 0.005 * max(abs(was), 1e-9)
-        unchanged += negligible
+        physical += is_physical
+        unchanged += negligible and is_physical
         mark = "  same" if negligible else (" better" if change * better > 0 else " worse")
-        print(f"  {label:<36} {was:8.2f} -> {now:8.2f} {unit:<4}{mark}")
+        print(f"  {label:<38} {was:8.2f} -> {now:8.2f} {unit:<4}{mark}")
 
-    if unchanged == len(_VERDICT_ROWS):
-        # The shipped defaults reproduce the reference exactly, so a first run
-        # prints five identical rows. Saying so is the difference between
-        # "the harness works" and "something is broken".
+    if unchanged == physical:
+        # The shipped defaults reproduce the reference physically, so a first
+        # run prints identical rows down to the fairness pair. Saying so is
+        # the difference between "the harness works" and "something is
+        # broken" -- and the fairness rows, which do move, are the first
+        # demonstration that a tariff is a redistribution before it is
+        # anything else.
         print(
-            "\n  Every row identical. Expected on a fresh checkout: the default\n"
-            "  `my_controller` IS the reference controller, and the default\n"
-            "  `my_tariff` only redistributes, so the community total is unmoved.\n"
-            "  Edit sandbox/my_idea.py and run this again."
+            "\n  Every physical row identical. Expected on a fresh checkout: the\n"
+            "  default `my_controller` IS the reference controller, so nothing on\n"
+            "  the feeder changed. The fairness rows still move, because the\n"
+            "  default `my_tariff` rebates its congestion term equally over all\n"
+            "  eighteen connection points -- that is a tariff redistributing\n"
+            "  without changing a single kilowatt. Edit sandbox/my_idea.py and\n"
+            "  run this again."
         )

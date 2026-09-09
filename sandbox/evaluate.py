@@ -66,7 +66,7 @@ import jax
 import numpy as np
 
 from sandbox.controller import TUNING_GRID, Controller, base_controller
-from sandbox.metrics import Score, compare, revenue_adequate, score
+from sandbox.metrics import Score, compare, fairness, revenue_adequate, score
 from sandbox.rollout import TariffFactory, build_env, rollout
 from sandbox.scenarios import EPISODE_STEPS, Population
 from sandbox.tuning import tune
@@ -134,6 +134,7 @@ class Evaluation:
         )
         return (
             f"{compare(self.cells)}\n\n"
+            f"{fairness(self.cells)}\n\n"
             f"revenue adequacy: {gate}\n"
             f"co-design premium: {premium or 'n/a (no tariff submitted)'}"
         )

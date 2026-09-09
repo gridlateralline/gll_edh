@@ -7,6 +7,15 @@ Eighteen households on a real low-voltage feeder. You edit **two functions** —
 grid tariff and a household controller — and everything else is fixed: the power
 flow, the feasibility projection, the rollout, the scoring.
 
+**What you hand in is the reasoning, not the code.** The two functions exist so
+you can test an idea against real physics; the submission is a pull request
+explaining what you tried, who it helps and harms, and what you would need to
+put it on a real bill. A clearly argued mechanism with a mediocre `score()`
+beats a tuned one nobody can explain. Read
+[What the pull request should say](#what-the-pull-request-should-say) before
+you start, not after — several of the questions are much easier to answer while
+you are still deciding what to build.
+
 ## Start here
 
 The one prerequisite is [**uv**](https://docs.astral.sh/uv/getting-started/installation/),
@@ -50,9 +59,13 @@ Edit, `check()`, repeat — and reach for `check(fast=False)` the moment
 something breaks, because it drops the compilation and puts your own line in
 the traceback.
 
-**On a fresh checkout `check()` prints five identical rows, and that is
-correct.** The shipped `my_controller` *is* the reference controller and the
-shipped `my_tariff` only redistributes, so nothing has moved yet. It says so.
+**On a fresh checkout every physical row `check()` prints is identical, and
+that is correct.** The shipped `my_controller` *is* the reference controller,
+so nothing on the feeder has moved yet. It says so. The two fairness rows do
+move, because the shipped `my_tariff` rebates its congestion term equally over
+all eighteen connection points — a tariff redistributing hard without shifting
+a single kilowatt, which is the normal case and worth a look before you change
+anything.
 
 **And `check()` cannot show a tariff working.** It does not tune, and no
 household sees a price during an episode, so a tariff-only edit changes the
@@ -72,24 +85,57 @@ Everything below is context you can read later.
 
 ---
 
-## The problem in one paragraph
+## The problem
 
 Give every household a battery and let each one do the obvious thing — store
-your own solar, use it later — and each household is better off on every
-measure it can see. Lower peak, more self-consumption, a bigger cheque. And
-the feeder gets **worse**, because every roof peaks at noon so every battery
-fills at noon, and every battery therefore stops absorbing at the same moment.
-No price is involved. The correlation is in the weather and the working day.
+your own solar, use it later. Each household is better off on every measure it
+can see: more self-consumption, a lower evening peak, a bigger cheque.
 
-One week, seed 0 — what cell 4 of the quickstart prints:
+**The transformer barely notices.** One week, seed 0 — what cell 4 of the
+quickstart prints:
 
-| controller | export peak | ramp | coincidence | community CHF |
-|---|---|---|---|---|
-| do nothing | 69.4 kW | **6.9 kW** | 0.805 | 299 |
-| self-consumption | 66.8 kW | **16.1 kW** | 0.773 | 332 |
+| controller | **export peak** | pk/avg | ramp | sync | self-cons. | community CHF |
+|---|---|---|---|---|---|---|
+| do nothing | 69.4 kW | 2.83 | 6.9 kW | +0.27 | 14 % | 299 |
+| self-consumption | **66.8 kW** | 3.57 | 16.1 kW | +0.59 | **28 %** | **332** |
 
-The steepest swing at the transformer gets **2.3× worse**, while every number a
-household can see improves.
+The export peak is the number this feeder is sized by — the worst export
+interval decides whether the transformer, the cables and the planning
+assumptions have to be replaced. Twelve batteries bought and installed move it
+**two per cent**, because every battery is full hours before the peak it would
+have to absorb. Household self-consumption doubles. The household optimises one
+quantity and the network is sized by another, and that gap is the whole
+challenge.
+
+What does change is the *shape*: the same week's work squeezed into a narrower
+window (`pk/avg` +30 %) with a steepest swing twice as sharp, because every roof
+peaks at noon, so every battery fills at noon, and every battery therefore stops
+absorbing at the same moment.
+
+**And the cost base collapses onto the people who cannot leave it.**
+
+The eighteen connection points are not alike, and this is where that starts to
+matter: **6 `tenant`** with no inverter at all, **2 `pv_only`** with a roof and
+no storage, **6 `pv_battery`**, and **4 `large_flex`** with a bigger flexible
+load. Only the last twelve can act. The first six can do nothing whatsoever
+about any of what follows.
+
+| controller | tenant | pv_only | pv_battery | large_flex | tenants' share of imports |
+|---|---|---|---|---|---|
+| do nothing | +0.223 | −0.209 | −0.95 | −0.24 | 32 % |
+| self-consumption | **+0.223** | −0.213 | **−7.83** | −1.38 | **64 %** |
+
+CHF per kWh consumed. The battery households stop buying — their imports fall by
+about seven eighths — so the six tenants go from carrying a third of everything
+the feeder imports to carrying two thirds, at a cost per kWh that does not move
+by a rappen. They have no roof and nothing to change. The network got no
+cheaper; it got cheaper for the households that could afford a battery.
+
+Ask the participation question, because a real tariff has to survive it: **would
+every party sign this?** Battery and flexible households, gladly. `pv_only`,
+indifferent. Tenants, no — they pay the same for a network whose cost they now
+carry twice the share of. The operator, no — two per cent off the binding
+constraint, a sharper feeder, half the cost base. Two of five would refuse.
 
 Better for each household, worse for the system they share. That is the school
 of fish: every fish using only what it can see from where it is, and the school
@@ -201,6 +247,9 @@ locational distinctions the voltages do not.
    ordered by electrical distance from the transformer. (There are no map
    coordinates: the grid asset's `position` field is pandapower plotting
    geodata, incomplete, and unused here.)
+
+5. **Argue it** — the pull request. This is the one that is actually marked;
+   see [Handing it in](#handing-it-in). The other four produce the evidence.
 
 The two design pathways are equally central, and a submission may touch either,
 both, or neither and fall back to the reference. The controller pathology is
@@ -329,14 +378,25 @@ The jury is [`sandbox/metrics.py`](sandbox/metrics.py), fixed and not editable:
 
 - **Network** — transformer peak both ways, reverse-flow share, losses.
 - **Diversity** — the coincidence factor, the quantity distribution networks
-  are actually planned against.
-- **Ramp** — where herding shows up first and most violently.
+  are actually planned against, and peak-to-average beside it.
+- **Ramp** — where herding shows up first and most violently. One interval out
+  of 671, so it is the sharpest number on the board and the least robust;
+  read it next to `pk/avg`, never alone. `sync` sits beside both: the share of
+  the fleet's battery movement that is common-mode, and the one figure here a
+  controller cannot flatter by simply doing less. Measured on the battery flow
+  rather than on the inverter power a household requests or the meter reading
+  it is settled on — **both of those score +0.87 for a fleet that coordinates
+  nothing**, because twelve roofs share one sky and twelve households cook at
+  the same time. That is the challenge's premise as a number, and it is why
+  reading synchronisation off the billed quantity does not work.
 - **Economics** — settlement against a do-nothing floor, and curtailment. A
   tariff that flattens the feeder by spilling a fifth of the solar has not
   solved anything.
-- **Fairness** — cost per kWh, over all eighteen connection points. Six of them
-  are tenants with no inverter, absent from anything indexed by agent, and
-  exactly who a bad tariff harms.
+- **Fairness** — cost per kWh broken out by household type, plus the tenants'
+  share of the feeder's imports. Printed as its own table, because no feeder
+  quantity can tell you who paid for the improvement. Six of the eighteen
+  connection points are tenants with no inverter, absent from anything indexed
+  by agent, and exactly who a bad tariff harms.
 
 One hard gate: **revenue adequacy**. A tariff that simply pays everybody
 produces a delighted population and a bankrupt network operator, so it is
@@ -353,16 +413,24 @@ working, not printing money.
 | `export_pk_kW` / `draw_pk_kW` | transformer peak, exporting / drawing | lower |
 | `reverse` | share of the week the feeder runs backwards | lower |
 | `coincid` | coincidence factor — everyone acting at once | lower |
+| `pk/avg` | how much of the week's work lands in its worst interval | lower |
 | `ramp_kW` | steepest interval-to-interval swing at the transformer | lower |
-| `corr` | mean pairwise correlation of household power changes | lower |
+| `sync` | share of the fleet's battery movement that is common-mode | lower |
 | `loss` | network losses as a share of energy served | lower |
 | `curtail` | generation thrown away | lower |
 | `selfcons` | generation used behind the meter | higher |
 | `CHF` | what the community earned, summed over all 18 points | higher |
 | `>1.05` | share of bus-intervals above the planning trigger | lower |
 
-Then `revenue adequacy: PASS/FAIL` and the co-design premium, then five of
-those columns restated in plain words.
+Then a second table, `CHF/kWh consumed, by household type`: what a kWh cost
+each of the four types (pooled per group, so one household approaching zero
+imports cannot run away with the average), the spread between best- and
+worst-treated type, and `tenant_import` — the tenants' share of everything the
+feeder imported, which is the network's cost base and the only place on the
+board where it appears.
+
+Then `revenue adequacy: PASS/FAIL` and the co-design premium, then the
+headline columns restated in plain words.
 
 **Read the whole row.** The shipped default tariff halves the export peak and
 improves the ramp — by making the tuned household cap its exports and curtail
@@ -389,10 +457,111 @@ git push -u origin our-team-name
 gh pr create
 ```
 
-In the PR description, say what you tried and what the numbers did — paste the
-`score()` output, and tell us what you expected that did not happen. A
-submission that explains a negative result is worth more than one that only
-shows the run that worked.
+### What the pull request should say
+
+**We are judging the idea, not the code.** The diff is evidence; the PR
+description is the submission. A clearly reasoned mechanism with a mediocre
+`score()` beats a tuned one nobody can explain, and a submission that explains
+why something did *not* work is worth more than one that shows only the run
+that did. Write it for a reader who has not seen your code.
+
+Paste the `score()` output, then work through as much of the following as your
+idea touches. Not a form to fill in — skip what does not apply, and say so.
+
+**How your tariff is calculated.** In words, not code. What is charged, on what
+quantity, at what times, and to whom. Someone should be able to re-implement
+it from your paragraph without reading `my_tariff`.
+
+**What grid operation cost you are internalising.** Every term in a tariff
+should stand for a real cost the network incurs. Transformer replacement?
+Cable thermal ageing? Losses? Reserve procurement? Reverse-flow protection
+settings? Name the cost, and say why your term is a defensible proxy for it.
+"It made the export peak go down" is a result, not a justification — the
+question is whether the household is being charged for something it actually
+caused.
+
+**How a household could anticipate it.** The hardest and most important one.
+No household sees a price during an episode, so your tariff can only steer
+behaviour that is *predictable in advance* from what a household knows: the
+clock, the weather, its own load, its own state of charge. If the only way to
+respond correctly is to know what the other seventeen households did, your
+tariff is a lottery — it redistributes ex post and steers nothing. Say what
+signal a real household would act on, and how far ahead it could see it.
+
+**Who gains, who loses, and would they sign.** Use the fairness table. Go
+through all five parties — the four household types and the network operator —
+and say what each one gets. A mechanism that improves the feeder by charging
+the six tenants, who have no roof and no way to respond, is a transfer rather
+than an incentive. If your tariff only works for a subset of customers, say so
+explicitly and narrow it: **a rate class that is voluntary and beneficial to
+everyone inside it is a legitimate answer**, and a much more honest one than a
+universal tariff that quietly loses. If you narrow it, show that the customers
+outside it are no worse off.
+
+**What you measured, and what you wish you could have.** Which metrics you
+steered by, which you ignored and why. Then the more useful half: what would
+you have wanted the jury to report that it does not? A metric you needed and
+could not get is a finding about the problem — tell us what it would have
+measured and what decision it would have changed.
+
+**What would stop this reaching a real bill.** Be adversarial about your own
+idea. Candidates: revenue volatility for the operator across weather years;
+bill shock or unhedgeable risk for the household; whether it is legal under
+Swiss tariff rules; whether it needs metering, forecasting or communication
+infrastructure that does not exist; whether it is gameable; whether a customer
+could understand it well enough to consent to it. One honest paragraph here is
+worth more than another tuning pass.
+
+**If you changed the controller: what a household is now doing differently.**
+In words, and why a real household would want to. The controller is a claim
+about the follower's best response, so say what makes the new behaviour
+individually rational — not merely better for the feeder. If it only pays off
+once a price exists, say which price.
+
+**Where you would go next.** Directions you uncovered and could not finish, and
+**why each looks promising** — what you saw that made you think so. Dead ends
+count too, with the reason they died.
+
+### A template you can paste
+
+Nothing here is compulsory; delete what does not apply and say why.
+
+```markdown
+## What we built
+One paragraph. The mechanism in words.
+
+## How the tariff is calculated
+Charged on what quantity, when, to whom. Enough to re-implement without the code.
+
+## The grid cost we are internalising
+Which real network cost, and why our term is a defensible proxy for it.
+
+## How a household anticipates it
+What signal it acts on, how far ahead it can see it. (If it cannot: say so.)
+
+## Who gains and who loses
+| party | effect | would they sign? |
+|---|---|---|
+| tenant | | |
+| pv_only | | |
+| pv_battery | | |
+| large_flex | | |
+| network operator | | |
+
+Voluntary rate class rather than universal? Say so here, and show the
+customers outside it are no worse off.
+
+## Results
+`score()` output, pasted. What we expected that did not happen.
+
+## What we measured, and what we wish we could have
+
+## What would stop this reaching a real bill
+
+## Where we would go next, and why it looks promising
+```
+
+Numbers welcome throughout, but the reasoning is the submission.
 
 ## The feeder
 

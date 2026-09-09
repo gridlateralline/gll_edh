@@ -40,6 +40,21 @@ from sandbox.rollout import Trajectory
 from sandbox.scenarios import STEPS_PER_DAY, Population, step_duration_h
 
 
+def _calendar_day(day_step: np.ndarray) -> np.ndarray:
+    """Which calendar day each interval falls in, 0 for the first one.
+
+    Not ``interval // STEPS_PER_DAY``: an episode starts at whatever time of
+    day the generator drew, so the step index and the clock are offset. Count
+    midnights instead -- ``day_step`` wrapping back to zero -- so that
+    ``frame.query("day == 2")`` is one calendar day running 00:00 to 24:00
+    with ``hour`` increasing throughout. Day 0 and the last day are partial.
+    """
+    day_step = np.asarray(day_step)
+    midnight = np.zeros(day_step.shape[0], dtype=np.int64)
+    midnight[1:] = (np.diff(day_step) < 0).astype(np.int64)
+    return np.cumsum(midnight)
+
+
 def to_dataframe(
     trajectory: Trajectory,
     population: Population,
@@ -49,7 +64,9 @@ def to_dataframe(
 
     Columns:
         ``interval`` -- step index from the start of the episode.
-        ``day`` / ``day_step`` / ``hour`` -- clock, for time-of-day grouping.
+        ``day`` / ``day_step`` / ``hour`` -- clock, for time-of-day
+        grouping. ``day`` counts midnights from the start of the episode,
+        which does not begin at midnight, so days 0 and last are partial.
         ``connection`` -- connection point index, 0 to 17.
         ``household`` -- its type: tenant, pv_only, pv_battery, large_flex.
         ``distance_rank`` -- 0 nearest the transformer, 17 furthest.
@@ -71,7 +88,9 @@ def to_dataframe(
     n_steps, num_pq = np.asarray(trajectory.e_grid_kwh).shape
     interval = np.repeat(np.arange(n_steps), num_pq)
     connection = np.tile(np.arange(num_pq), n_steps)
-    day_step = np.repeat(np.asarray(trajectory.day_step), num_pq)
+    day_step_1d = np.asarray(trajectory.day_step)
+    day_step = np.repeat(day_step_1d, num_pq)
+    day = np.repeat(_calendar_day(day_step_1d), num_pq)
 
     inverter_of_pq = {pq: agent for agent, pq in enumerate(population.inverter_id)}
     agent_index = np.array([inverter_of_pq.get(pq, -1) for pq in range(num_pq)])
@@ -90,7 +109,7 @@ def to_dataframe(
     frame = pd.DataFrame(
         {
             "interval": interval,
-            "day": interval // STEPS_PER_DAY,
+            "day": day,
             "day_step": day_step,
             "hour": day_step * (24.0 / STEPS_PER_DAY),
             "connection": connection,
@@ -119,13 +138,18 @@ def feeder_dataframe(
 
     ``transformer_kw`` follows the load convention: positive when the feeder
     draws from the grid, negative when it exports into it.
+
+    ``day`` counts midnights, as in :func:`to_dataframe`, so
+    ``frame.query("day == 2")`` is a whole calendar day with ``hour`` running
+    0 to 24 in order -- which is what a plot of one day against ``hour``
+    needs.
     """
     n_steps = int(np.asarray(trajectory.transformer_kw).shape[0])
     day_step = np.asarray(trajectory.day_step)
     frame = pd.DataFrame(
         {
             "interval": np.arange(n_steps),
-            "day": np.arange(n_steps) // STEPS_PER_DAY,
+            "day": _calendar_day(day_step),
             "day_step": day_step,
             "hour": day_step * (24.0 / STEPS_PER_DAY),
             "transformer_kw": np.asarray(trajectory.transformer_kw),

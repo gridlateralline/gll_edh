@@ -16,11 +16,13 @@
 """The jury. Fixed, and not editable by participants.
 
 What a distribution network operator actually worries about, which is mostly
-**not voltage**. On a dense, meshed urban network -- ewz's own -- meshing buys
-voltage stiffness and no thermal capacity whatsoever, so voltage sits
-comfortably in band while the transformer, the cables and the planning
-assumptions take the strain. Over-voltage is a real constraint on long rural
-feeders and a research question here, not the headline.
+**not voltage**. Over-voltage is real on the ``rural`` feeder this challenge
+runs on -- 8.7 % of bus-intervals above 1.05 pu, peaking at 1.107 -- and it
+is reported (the ``>1.05`` column). But on the dense meshed network ewz
+actually operates, meshing buys voltage stiffness and no thermal capacity
+whatsoever, so voltage sits comfortably in band while the transformer, the
+cables and the planning assumptions take the strain. The jury is weighted
+for the constraints that bind on both: reverse flow, lost diversity, ramp.
 
 Five families, and the third and fourth are the ones this challenge turns on.
 
@@ -51,7 +53,6 @@ array entirely, and they are exactly the ones a badly designed tariff harms.
 """
 
 from dataclasses import asdict, dataclass
-from typing import Optional
 
 import jax.numpy as jnp
 import numpy as np
@@ -105,7 +106,7 @@ class Score:
 
 def _per_household_kw(trajectory: Trajectory) -> jnp.ndarray:
     """(T, num_pq) net power at every connection point, tenants included."""
-    return trajectory.meter_kwh / step_duration_h()
+    return trajectory.e_grid_kwh / step_duration_h()
 
 
 def coincidence_factor(trajectory: Trajectory) -> float:
@@ -145,7 +146,7 @@ def action_correlation(trajectory: Trajectory) -> float:
     households move independently; near one means a single decision is being
     taken by everybody.
     """
-    changes = jnp.diff(trajectory.p_set_kw, axis=0)
+    changes = jnp.diff(trajectory.p_inv_set_kw, axis=0)
     centred = changes - changes.mean(0, keepdims=True)
     deviation = jnp.sqrt((centred**2).mean(0)) + 1e-8
     correlation = (centred.T @ centred) / changes.shape[0] / jnp.outer(deviation, deviation)
@@ -163,13 +164,13 @@ def curtailed_share(trajectory: Trajectory) -> float:
 def self_consumption_share(trajectory: Trajectory) -> float:
     """Generation used behind the meter rather than exported."""
     generated = float(trajectory.pv_realized_kw.sum())
-    exported = float(jnp.maximum(trajectory.meter_kwh / step_duration_h(), 0.0).sum())
+    exported = float(jnp.maximum(trajectory.e_grid_kwh / step_duration_h(), 0.0).sum())
     if generated <= 0.0:
         return 0.0
     return float(max(0.0, 1.0 - exported / generated))
 
 
-def cost_per_kwh(trajectory: Trajectory, population: Population) -> np.ndarray:
+def cost_per_kwh(trajectory: Trajectory) -> np.ndarray:
     """(num_pq,) what each connection point paid per kWh it consumed.
 
     The comparable fairness quantity. Raw settlement is not: a household that
@@ -181,9 +182,8 @@ def cost_per_kwh(trajectory: Trajectory, population: Population) -> np.ndarray:
     Negative for a household that earned more than it spent.
     """
     settlement = np.asarray(trajectory.settlement_chf).sum(0)
-    consumed = np.maximum(-np.asarray(trajectory.meter_kwh), 0.0).sum(0)
+    consumed = np.maximum(-np.asarray(trajectory.e_grid_kwh), 0.0).sum(0)
     consumed = np.where(consumed > 1e-6, consumed, np.nan)
-    del population
     return -settlement / consumed
 
 
@@ -196,26 +196,20 @@ def _mean_for(values: np.ndarray, population: Population, *types: str) -> float:
     return float(selected.mean()) if selected.size else float("nan")
 
 
-def score(
-    trajectory: Trajectory,
-    population: Population,
-    baseline: Optional[Score] = None,
-) -> Score:
+def score(trajectory: Trajectory, population: Population) -> Score:
     """Score one episode.
 
     Args:
-        trajectory: A single episode -- not a seed ensemble. Use
-            :func:`score_ensemble` for those.
+        trajectory: A single episode. Average the *metrics* over an ensemble,
+            never the trajectories -- a peak is not linear, and the mean of
+            two weeks' flows has a lower peak than either week. See
+            :func:`sandbox.evaluate._mean_score`.
         population: Who lives on the feeder, for the fairness breakdown.
-        baseline: Unused here, accepted so callers can pass the do-nothing
-            reference through a uniform signature.
     """
-    del baseline
-
     transformer = trajectory.transformer_kw
     flows = jnp.abs(_per_household_kw(trajectory)).sum(-1)
-    served_kwh = float(jnp.abs(trajectory.meter_kwh).sum())
-    per_kwh = cost_per_kwh(trajectory, population)
+    served_kwh = float(jnp.abs(trajectory.e_grid_kwh).sum())
+    per_kwh = cost_per_kwh(trajectory)
     finite = per_kwh[np.isfinite(per_kwh)]
 
     return Score(

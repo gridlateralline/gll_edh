@@ -63,7 +63,7 @@ def _over_voltage_fraction(trajectory) -> float:
 
 
 def _peak_kw(trajectory) -> float:
-    return float((jnp.abs(trajectory.meter_kwh.sum(-1)) / 0.25).max())
+    return float((jnp.abs(trajectory.e_grid_kwh.sum(-1)) / 0.25).max())
 
 
 def test_the_default_feeder_is_the_rural_one() -> None:
@@ -210,8 +210,8 @@ def test_violations_can_be_removed_but_not_for_free(env, population) -> None:
         surplus = jnp.maximum(obs.pv_available_kw - obs.load_kw, 0.0)
         export = jnp.maximum(surplus - obs.bat_charge_max_kw, 0.0)
         target = jnp.minimum(obs.load_kw + export, obs.load_kw + params["cap_kw"])
-        p_set_kw = clip_to_feasible(target, obs)
-        return p_set_kw, update_memory(carry, obs, p_set_kw)
+        p_inv_kw = clip_to_feasible(target, obs)
+        return p_inv_kw, update_memory(carry, obs, p_inv_kw)
 
     blunt = Controller(
         name="export_cap",
@@ -252,7 +252,7 @@ def test_the_eager_path_agrees_with_the_scanned_one(env, population) -> None:
     fast = rollout(base_controller(), population, key, 24, env=env, fast=True)
     eager = rollout(base_controller(), population, key, 24, env=env, fast=False)
 
-    chex.assert_trees_all_close(fast.p_set_kw, eager.p_set_kw, atol=1e-5)
+    chex.assert_trees_all_close(fast.p_inv_set_kw, eager.p_inv_set_kw, atol=1e-5)
     chex.assert_trees_all_close(fast.settlement_chf, eager.settlement_chf, atol=1e-5)
 
 

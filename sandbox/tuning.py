@@ -38,7 +38,7 @@ between what a household wants and what the network needs *is* the mechanism
 design problem; closing it is what designing a tariff means.
 
 **Parameters are shared across the population.** Heterogeneity lives in the
-state -- a tenant has ``p_min_kw == p_max_kw == 0``, so the same parameters
+state -- a tenant has ``p_inv_min_kw == p_inv_max_kw == 0``, so the same parameters
 produce no action from them -- which keeps this one optimisation rather than a
 twelve-player game with a fixed point to chase.
 """

@@ -27,6 +27,12 @@ tariff       everything: the solved network               after the interval
 controller   one household's own meter                    before, blind
 ============ ============================================ ==================
 
+What is being settled is ``e_grid_kwh``: the net energy exchanged with the
+grid at each connection point, inverter output minus household load. Not the
+inverter's output, and not the household's consumption -- the meter reading.
+A household chooses its inverter setpoint; it is billed on what that came to
+after its own load was served. See :mod:`sandbox.observation`.
+
 Retroactive means **unknowable when the household acted**, not dependent on
 the future. A price computed from the power flow that just solved is fully
 retroactive in the sense that matters -- nobody could have reacted to it --
@@ -105,7 +111,7 @@ def _assert_settles_every_connection_point(settlement_chf: chex.Array, num_pq: i
             f"A tariff must settle all {num_pq} connection points. Six of them are "
             "tenants with no inverter and therefore no agent, so a settlement shaped "
             "like the agents silently drops exactly the households a bad tariff "
-            "harms. Return something shaped like `grid.net_kwh` and this is right "
+            "harms. Return something shaped like `grid.e_grid_kwh` and this is right "
             "by construction. See TARIFF_COOKBOOK.md, 'The two rules'."
         ) from mismatch
 
@@ -154,7 +160,32 @@ class TariffObservation(RewardObservation):
 
 
 def base_payments() -> Payments:
-    """ewz's published fair-LEG rates -- the tariff in force today."""
+    """The **fair LEG** rate set: the baseline this challenge is scored against.
+
+    Fair LEG is **not** a product ewz sells. It is assembled here from ewz's
+    real, published 2026 rate components -- the EEA feed-in tariff, ewz.natur
+    energy, grid usage, public duties -- with one construction on top: trading
+    inside a local electricity community waives 40 % of the grid usage fee,
+    and fair LEG splits that saving **evenly** between the injector and the
+    consumer. Symmetric by construction, hence the name. Every member gains
+    the same 1.19 Rp./kWh off-peak and 2.38 Rp./kWh peak against its own
+    fallback rate.
+
+    Why not ewz's actual LEG product? That is **Solarquartier**, and it is
+    also bundled in `gll_env` (``payments: solarquartier``). It grants the
+    consumer the full 40 % rebate but charges a flat 13 Rp./kWh LEG energy
+    rate, which is well above what ewz.natur charges off-peak -- so a pure
+    consumer inside a Solarquartier LEG pays about 5.7 Rp./kWh **more**
+    off-peak than it would outside, and saves only about 1.1 Rp./kWh at peak.
+    The producer captures nearly all of the community's saving. As a baseline
+    that is too easy to beat and too easy to beat for the wrong reason: any
+    tariff that stops actively penalising consumers looks like a triumph.
+
+    So the status quo modelled here is deliberately the *fair* version --
+    a LEG whose incentives are already balanced between the two sides. Beating
+    it has to mean saying something about the **network**, which is the
+    question the challenge is actually about.
+    """
     from gll_env.factories import payments
     from omegaconf import OmegaConf
 
@@ -162,13 +193,14 @@ def base_payments() -> Payments:
 
 
 def base_tariff(prosumer: ProsumerDynamics) -> LegSettlementReward:
-    """Fair LEG: the status quo, and the thing to beat.
+    """Fair LEG settlement: the status quo, and the thing to beat.
 
-    A local electricity community settling at preferential rates for whatever
-    it matches internally and falling back to grid rates for the rest, with a
-    peak/off-peak split. Real, published, and currently sold by ewz -- so a
-    submission that beats it has said something about the world rather than
-    about a toy.
+    A local electricity community settles at preferential LEG rates for
+    whatever it matches internally -- ``min(total injection, total
+    consumption)`` each interval, pro rata, nobody matched preferentially --
+    and falls back to grid rates for the rest, with a peak/off-peak split.
+    See :func:`base_payments` for where the rates come from and how "fair"
+    differs from ewz's shipped Solarquartier product.
 
     Note what it does *not* do: it carries no information about the network.
     Two households on the same feeder pay the same rate at the same hour
@@ -210,20 +242,30 @@ class MyTariff(CausalReward):
     * **Locational, at least in principle.** It charges contribution to a
       shared problem rather than consumption as such.
 
-    The defaults are calibrated to the weakest setting that changes anybody's
-    mind: at 1.00 CHF/kWh above 3 kWh the tuned household caps its exports,
-    and below roughly that it does not. Worth knowing why the number is so
-    much larger than the 0.14 CHF/kWh feed-in rate it competes with -- the
-    charge is shared pro rata, so one household's *marginal* exposure is only
-    its share of it, an order of magnitude less than the headline. A price
-    that looks punitive at the top can be nearly invisible at the margin,
-    which is the first thing to check when a tariff seems to do nothing.
+    The defaults are set where the mechanism visibly bites: at 1.00 CHF/kWh
+    above 3 kWh the tuned household caps its exports, and much below that it
+    does not. Worth knowing why the number is so much larger than the
+    0.14 CHF/kWh feed-in rate it competes with -- the charge is shared pro
+    rata, so one household's *marginal* exposure is only its share of it, an
+    order of magnitude less than the headline. A price that looks punitive at
+    the top can be nearly invisible at the margin, which is the first thing
+    to check when a tariff seems to do nothing.
 
-    And here is what is wrong with it, which is the interesting part. It is
-    an *aggregate* signal: every household on the feeder sees the same
-    congestion condition, so every household tuned against it responds in the
-    same interval. It prices the symptom rather than the location, and a
-    population optimising against it may well synchronise harder, not less.
+    **And it bites the wrong way, which is the interesting part.** Run
+    ``score()`` on the shipped defaults and the export peak nearly halves and
+    the ramp improves -- because the household's cheapest response to the
+    charge is to cap exports and *throw generation away*. Curtailment goes
+    from under 2 % of what the roofs could make to over a quarter of it, and
+    the community's settlement halves with it. A tariff that flattens the
+    feeder by spilling solar has not solved anything; it has bought one
+    metric with another, which is why ``curtailed_share`` and
+    ``community_settlement_chf`` are in the jury.
+
+    The second flaw is structural. It is an *aggregate* signal: every
+    household on the feeder sees the same congestion condition, so every
+    household tuned against it responds in the same interval. It prices the
+    symptom rather than the location, and a population optimising against it
+    may well synchronise harder, not less -- watch ``coincidence_factor``.
     The voltage and impedance data needed for a genuinely nodal price are all
     in `new_state`.
 
@@ -232,8 +274,13 @@ class MyTariff(CausalReward):
             underneath and for ``num_pq``.
         headroom_kwh: Aggregate feeder flow, per interval and in either
             direction, that costs nothing. Beyond it, congestion is priced.
+            Only used by :func:`default_tariff` and by a direct
+            ``MyTariff(...)``; a participant's own numbers come from
+            ``TARIFF_PARAMS`` through
+            :func:`tariff_from_settlement` instead, and these two arguments
+            are then ignored.
         price_chf_per_kwh: What a kWh of excess flow costs the household
-            responsible for it.
+            responsible for it. Same caveat.
         init_carry: Builds the tariff's starting carry -- state that survives
             across intervals. Defaults to `init_tariff_memory`; supply your
             own the way a controller supplies its own `init_carry`.
@@ -267,11 +314,11 @@ class MyTariff(CausalReward):
         This is the general seam. Any function of one settled interval plus
         whatever you chose to remember can go here: a flat rate, a
         time-of-use schedule, a locational price built from
-        ``grid.voltage_pu``. ``grid.energy_chf`` is available if fair LEG's
+        ``grid.voltage_pu``. ``grid.fair_leg_chf`` is available if fair LEG's
         energy pricing is a useful place to start. The default builds on it
         with a redistributed surcharge and passes `carry` through untouched.
         """
-        return grid.energy_chf - self.congestion_charge_from_view(grid), carry
+        return grid.fair_leg_chf - self.congestion_charge_from_view(grid), carry
 
     def congestion_charge_from_view(self, grid: "GridView") -> chex.Array:
         """Override this to price *just* the congestion term. See :class:`GridView`.
@@ -280,21 +327,23 @@ class MyTariff(CausalReward):
         shape (fair LEG plus a surcharge). Redesigning the settlement itself
         means overriding :meth:`settlement_from_view` instead.
         """
-        return self.congestion_charge(grid.net_kwh)
+        return self.congestion_charge(grid.e_grid_kwh)
 
-    def congestion_charge(self, e_pq_kwh: chex.Array) -> chex.Array:
+    def congestion_charge(self, e_grid_kwh: chex.Array) -> chex.Array:
         """CHF each connection point owes for this interval's congestion.
 
         Sums to zero: what the congested households pay, everybody shares.
         """
-        aggregate_kwh = jnp.sum(e_pq_kwh)
+        aggregate_kwh = jnp.sum(e_grid_kwh)
         excess_kwh = jnp.maximum(jnp.abs(aggregate_kwh) - self._headroom_kwh, 0.0)
 
         # Only flow in the direction the feeder is already strained counts as
         # contributing to the strain. A household importing while everyone
         # else exports is helping.
         exporting = aggregate_kwh > 0.0
-        contribution = jnp.where(exporting, jnp.maximum(e_pq_kwh, 0.0), jnp.maximum(-e_pq_kwh, 0.0))
+        contribution = jnp.where(
+            exporting, jnp.maximum(e_grid_kwh, 0.0), jnp.maximum(-e_grid_kwh, 0.0)
+        )
         total = jnp.sum(contribution)
         share = jnp.where(total > 1e-9, contribution / total, 0.0)
 
@@ -309,9 +358,9 @@ class MyTariff(CausalReward):
         dynamics: "EnvironmentDynamics",
     ) -> tuple[TariffState, chex.Array]:
         leg_state, _ = self._leg.settle(reward_state, state, new_state, dynamics)
-        energy_chf = jnp.asarray(leg_state.settlement_chf, dtype=jnp.float32)
+        fair_leg_chf = jnp.asarray(leg_state.settlement_chf, dtype=jnp.float32)
 
-        grid = to_grid_view(dynamics, new_state, energy_chf=energy_chf)
+        grid = to_grid_view(dynamics, new_state, fair_leg_chf=fair_leg_chf)
         settlement_chf, carry = self.settlement_from_view(grid, reward_state.carry)
         settlement_chf = jnp.asarray(settlement_chf, dtype=jnp.float32)
 
@@ -348,7 +397,7 @@ def tariff_from_settlement(
     This is the general pathway: `settlement_fn` returns the WHOLE interval's
     settlement. A flat rate, a time-of-use schedule, a fully nodal price, or
     fair LEG plus a congestion term are all just a different `settlement_fn`.
-    `grid.energy_chf` carries fair LEG's own number for anyone who wants to
+    `grid.fair_leg_chf` carries fair LEG's own number for anyone who wants to
     build on it -- see :class:`GridView`.
 
     A participant writes one pure function over one view instead of
@@ -374,7 +423,7 @@ def tariff_from_settlement(
 
 
 def tariff_from_charge(charge_fn, params: dict):
-    """Turn a plain ``charge(net_kwh, params) -> (num_pq,) CHF`` into a tariff.
+    """Turn a plain ``charge(e_grid_kwh, params) -> (num_pq,) CHF`` into a tariff.
 
     Narrower than :func:`tariff_from_settlement`, and a convenience when a
     redistributed congestion term over the existing tariff is exactly the

@@ -80,8 +80,8 @@ def collect(population, impedance_scale, key, n_steps):
         local = to_local(model, timestep.observation, state)
         rows.append({name: np.asarray(value) for name, value in local.as_dict().items()})
         keys = jax.random.split(decide_key, model.num_agents)
-        p_set_kw, carry = decide(local, carry, controller.params, keys)
-        state, timestep = env.step(state, to_action(model, p_set_kw))
+        p_inv_kw, carry = decide(local, carry, controller.params, keys)
+        state, timestep = env.step(state, to_action(model, p_inv_kw))
 
     return {name: np.stack([row[name] for row in rows]) for name in rows[0]}
 

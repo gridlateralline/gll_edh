@@ -27,11 +27,13 @@ the strategy the submission proposes. A household cannot best-respond into a
 strategy its firmware cannot express, which makes the first the short-run
 answer and the second the equilibrium the price is steering toward.
 
-The response is bounded by design. :func:`~sandbox.tuning.tune` searches the
-parameters in ``Submission.candidates`` within the controller of the cell it
-is scoring, not every controller anyone could write. An unconstrained
-follower would leave the two cells sharing no basis for comparison, and the
-premium nothing to measure.
+The response is bounded by design. :func:`~sandbox.tuning.tune` searches a
+declared parameter grid inside the controller of the cell it is scoring --
+:data:`~sandbox.controller.TUNING_GRID` for the base controller,
+``Submission.candidates`` (``TUNE_OVER``) for a submitted one -- not every
+controller anyone could write. An unconstrained follower would be a research
+project rather than a scoring step, and would leave the premium nothing to
+measure.
 
 Four cells, at the cost of one extra pair of rollouts:
 
@@ -63,7 +65,7 @@ from typing import Any, Optional
 import jax
 import numpy as np
 
-from sandbox.controller import Controller, base_controller
+from sandbox.controller import TUNING_GRID, Controller, base_controller
 from sandbox.metrics import Score, compare, revenue_adequate, score
 from sandbox.rollout import TariffFactory, build_env, rollout
 from sandbox.scenarios import EPISODE_STEPS, Population
@@ -82,10 +84,13 @@ class Submission:
     Attributes:
         controller: The household controller, or ``None`` to use the base.
         tariff: The tariff, or ``None`` to use fair LEG.
-        candidates: Parameter values to tune over before scoring under a
-            submitted tariff. Names must exist in the controller's own
-            parameters; anything not swept keeps its current value. Required
-            if `tariff` is given, since otherwise the tariff has no way to
+        candidates: Parameter values to tune the **submitted controller**
+            over before scoring under a submitted tariff -- ``TUNE_OVER`` in
+            ``my_idea.py``. Names must be parameters of that controller;
+            names it does not have are ignored, and anything not swept keeps
+            its current value. The base controller is tuned over its own
+            :data:`~sandbox.controller.TUNING_GRID` instead. Required if
+            `tariff` is given, since otherwise the tariff has no way to
             reach anybody at all.
     """
 
@@ -173,13 +178,27 @@ def evaluate(
 
         Skipped for fair LEG, whose reference controller is by definition
         already the one households run today.
+
+        Each controller is tuned over **its own** parameter space: the base
+        controller over :data:`~sandbox.controller.TUNING_GRID`, a submitted
+        one over ``submission.candidates`` (``TUNE_OVER`` in ``my_idea.py``).
+        They are different strategies with different knobs, and that is the
+        whole point of the bottom row -- the installed base can only
+        best-respond within what its own firmware exposes. Sweeping the
+        submission's parameter *names* over the base controller would
+        silently do nothing the moment a submission renamed a knob, and the
+        bottom-left cell would quietly stop being a best response at all.
         """
-        if tariff is None or not submission.candidates or not controller.params:
+        candidates = TUNING_GRID if controller is base else submission.candidates
+        if tariff is None or not candidates or not controller.params:
+            return controller
+        candidates = {k: v for k, v in candidates.items() if k in controller.params}
+        if not candidates:
             return controller
         params, _ = tune(
             controller,
             population,
-            submission.candidates,
+            candidates,
             tariff=tariff,
             n_steps=n_steps,
         )

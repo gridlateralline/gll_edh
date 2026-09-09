@@ -85,7 +85,7 @@ def test_the_controller_is_handed_a_price_free_observation(population, env) -> N
         "time_sin",
         "time_cos",
         "voltage_pu",
-        "meter_kw",
+        "p_grid_kw",
         "load_kw",
         "load_forecast_kw",
         "pv_available_kw",
@@ -93,8 +93,8 @@ def test_the_controller_is_handed_a_price_free_observation(population, env) -> N
         "soc_headroom_kwh",
         "bat_charge_max_kw",
         "bat_discharge_max_kw",
-        "p_min_kw",
-        "p_max_kw",
+        "p_inv_min_kw",
+        "p_inv_max_kw",
     }
     assert not any("price" in name or "chf" in name or "bill" in name for name in fields)
 
@@ -130,7 +130,7 @@ def test_any_action_at_all_is_survivable(population, env) -> None:
             env=env,
         )
         assert bool(jnp.all(trajectory.valid))
-        assert bool(jnp.all(jnp.isfinite(trajectory.p_realized_kw)))
+        assert bool(jnp.all(jnp.isfinite(trajectory.p_inv_realized_kw)))
 
 
 def test_the_clock_is_exact_and_not_reconstructed(population, env) -> None:
@@ -195,7 +195,7 @@ def test_a_nodal_tariff_needs_no_knowledge_of_gll_env(population) -> None:
 
     def nodal(grid, params):
         excess_pu = jnp.maximum(grid.voltage_pu - params["setpoint_pu"], 0.0)
-        charge = params["price"] * excess_pu * jnp.maximum(grid.net_kwh, 0.0)
+        charge = params["price"] * excess_pu * jnp.maximum(grid.e_grid_kwh, 0.0)
         return charge - jnp.mean(charge)
 
     tariff = tariff_from_charge(nodal, {"setpoint_pu": 1.02, "price": 100.0})
@@ -207,13 +207,13 @@ def test_a_nodal_tariff_needs_no_knowledge_of_gll_env(population) -> None:
 
 
 def test_a_tariff_can_replace_the_settlement_entirely(population) -> None:
-    """`tariff_from_settlement` is the general pathway: `grid.energy_chf` is
+    """`tariff_from_settlement` is the general pathway: `grid.fair_leg_chf` is
     offered, never required. A flat rate that never touches fair LEG's own
     number must reach the scorer exactly like any other tariff."""
 
     def flat_rate(grid, carry, params):
         del params
-        return -0.20 * grid.net_kwh, carry  # 20 rappen/kWh, whichever way it flows
+        return -0.20 * grid.e_grid_kwh, carry  # 20 rappen/kWh, whichever way it flows
 
     tariff = tariff_from_settlement(flat_rate, {})
     env = build_env(population, time_limit=DAY, tariff=tariff)
@@ -251,8 +251,8 @@ def test_a_tariff_can_carry_state_across_intervals(population) -> None:
 
     def running_peak_charge(grid, carry, params):
         del params
-        peak_kwh = jnp.maximum(carry, jnp.max(jnp.abs(grid.net_kwh)))
-        return -0.01 * peak_kwh * jnp.ones_like(grid.net_kwh), peak_kwh
+        peak_kwh = jnp.maximum(carry, jnp.max(jnp.abs(grid.e_grid_kwh)))
+        return -0.01 * peak_kwh * jnp.ones_like(grid.e_grid_kwh), peak_kwh
 
     tariff = tariff_from_settlement(running_peak_charge, {}, init_carry=lambda: jnp.float32(0.0))
     env = build_env(population, time_limit=DAY, tariff=tariff)
@@ -288,7 +288,7 @@ def test_a_numpy_tariff_reaches_the_scorer(population) -> None:
     @numpy_tariff
     def tenant_floor(grid, carry, params):
         del params
-        settlement = -0.20 * grid["net_kwh"]
+        settlement = -0.20 * grid["e_grid_kwh"]
         if grid["hour"] < 24:  # a real branch; always true, just proving it works
             settlement = np.where(grid["has_inverter"], settlement, settlement + 0.05)
         return settlement, carry.replace(intervals=carry.intervals + 1)
@@ -300,8 +300,8 @@ def test_a_numpy_tariff_reaches_the_scorer(population) -> None:
     chex.assert_shape(trajectory.settlement_chf, (DAY, population.num_pq))
     tenant_mask = np.asarray(population.mask_for("tenant"))
     # Every tenant got the floor added on top of its flow-based charge --
-    # tenants still consume, so their net_kwh is not itself zero.
-    expected = -0.20 * np.asarray(trajectory.meter_kwh[0])
+    # tenants still consume, so their e_grid_kwh is not itself zero.
+    expected = -0.20 * np.asarray(trajectory.e_grid_kwh[0])
     expected[tenant_mask] += 0.05
     np.testing.assert_allclose(np.asarray(trajectory.settlement_chf[0]), expected, atol=1e-4)
 
@@ -313,12 +313,12 @@ def test_the_grid_view_is_plain_si_over_connection_points(population, env) -> No
     new_state, _ = model.step(state, jnp.zeros((model.num_agents, model.action_dim), jnp.float32))
     grid = to_grid_view(model, new_state)
 
-    chex.assert_shape(grid.net_kwh, (population.num_pq,))
+    chex.assert_shape(grid.e_grid_kwh, (population.num_pq,))
     chex.assert_shape(grid.voltage_pu, (population.num_pq,))
     assert 0.8 < float(grid.voltage_pu.min()) and float(grid.voltage_pu.max()) < 1.2
     assert 0.0 <= float(grid.hour) < 24.0
     # kWh and kW must actually differ by the interval length, not be aliases.
-    chex.assert_trees_all_close(grid.net_kw * 0.25, grid.net_kwh, atol=1e-5)
+    chex.assert_trees_all_close(grid.p_grid_kw * 0.25, grid.e_grid_kwh, atol=1e-5)
 
 
 def test_the_congestion_charge_only_redistributes(population) -> None:
@@ -408,8 +408,8 @@ def test_the_numpy_tier_agrees_with_the_jax_one(population, env) -> None:
         surplus = max(float(obs["pv_available_kw"]) - float(obs["load_kw"]), 0.0)
         export = max(surplus - float(obs["bat_charge_max_kw"]), 0.0)
         target = float(obs["load_kw"]) + export
-        if target > float(obs["p_max_kw"]):  # a real Python branch
-            target = float(obs["p_max_kw"])
+        if target > float(obs["p_inv_max_kw"]):  # a real Python branch
+            target = float(obs["p_inv_max_kw"])
         return target, Memory(
             p_prev_kw=np.float32(target),
             voltage_ewma_pu=carry.voltage_ewma_pu,
@@ -420,11 +420,11 @@ def test_the_numpy_tier_agrees_with_the_jax_one(population, env) -> None:
     in_jax = rollout(base_controller(), population, key, DAY, env=env)
     numpy_run = rollout(in_numpy, population, key, DAY, env=env)
     # atol a hair above 1e-4: float32 lands a handful of household/intervals
-    # right on the p_max_kw clip boundary, where the two tiers' rounding can
+    # right on the p_inv_max_kw clip boundary, where the two tiers' rounding can
     # differ by ~1.7e-4 kW without either being wrong. Tighter than that
     # starts failing on population reshuffles alone, which isn't the trap
     # this test exists to catch.
-    chex.assert_trees_all_close(numpy_run.p_set_kw, in_jax.p_set_kw, atol=3e-4)
+    chex.assert_trees_all_close(numpy_run.p_inv_set_kw, in_jax.p_inv_set_kw, atol=3e-4)
 
 
 def test_a_seed_ensemble_is_just_a_vmap(population) -> None:
@@ -461,14 +461,14 @@ def test_perfect_synchrony_reads_as_a_coincidence_factor_of_one() -> None:
 
     def as_trajectory(meter: chex.Array) -> Trajectory:
         return Trajectory(
-            p_set_kw=meter,
-            p_realized_kw=meter,
-            meter_kwh=meter * 0.25,
+            p_inv_set_kw=meter,
+            p_inv_realized_kw=meter,
+            e_grid_kwh=meter * 0.25,
             reward_chf=jnp.zeros(shape),
             settlement_chf=jnp.zeros(shape),
             pv_available_kw=jnp.zeros(shape),
             pv_realized_kw=jnp.zeros(shape),
-            q_meter_kvarh=jnp.zeros(shape),
+            q_grid_kvarh=jnp.zeros(shape),
             transformer_kw=meter.sum(1),
             transformer_kvar=jnp.zeros((steps,)),
             losses_kw=jnp.zeros((steps,)),
@@ -492,7 +492,7 @@ def test_the_exported_frame_carries_the_households_with_no_agent(population, env
     assert set(frame.household) == {"tenant", "pv_only", "pv_battery", "large_flex"}
     tenants = frame[frame.household == "tenant"]
     assert len(tenants) == DAY * 6
-    assert tenants.p_set_kw.isna().all(), "a tenant sets nothing"
+    assert tenants.p_inv_set_kw.isna().all(), "a tenant sets nothing"
     assert tenants.settlement_chf.sum() < 0.0, "a household that only consumes pays"
 
     feeder = feeder_dataframe(trajectory)

@@ -41,15 +41,23 @@ the notebook or any Python prompt:
 ```python
 from sandbox.my_idea import check, score
 
-check()               # seconds: your idea vs the reference, on one day
-check(fast=False)     # slower, but concrete values and a working `print`
+check()               # ~10 s: your idea vs the reference, on one day
+check(fast=False)     # ~80 s: concrete values and a working `print`
 score()               # ~2 min: a full week, twenty weathers, the whole jury
 ```
 
 Edit, `check()`, repeat — and reach for `check(fast=False)` the moment
 something breaks, because it drops the compilation and puts your own line in
-the traceback. `score()` runs four rollouts with a tuning sweep inside each, so
-give it a couple of minutes; it has not hung.
+the traceback.
+
+**On a fresh checkout `check()` prints five identical rows, and that is
+correct.** The shipped `my_controller` *is* the reference controller and the
+shipped `my_tariff` only redistributes, so nothing has moved yet. It says so.
+
+**And `check()` cannot show a tariff working.** It does not tune, and no
+household sees a price during an episode, so a tariff-only edit changes the
+settlement and nothing physical. That is what a tariff *is* here — see
+"Scoring" below. Use `score()` to judge one.
 
 When a single function stops being enough room, the
 [controller](CONTROLLER_COOKBOOK.md) and [tariff](TARIFF_COOKBOOK.md) cookbooks
@@ -68,25 +76,46 @@ Everything below is context you can read later.
 
 Give every household a battery and let each one do the obvious thing — store
 your own solar, use it later — and each household is better off on every
-measure it can see. Lower peak, lower losses, more self-consumption, a smaller
-bill. And the feeder gets **worse**, because every roof peaks at noon so every
-battery fills at noon, and every battery therefore stops absorbing at the same
-moment. No price is involved. The correlation is in the weather and the working
-day.
+measure it can see. Lower peak, more self-consumption, a bigger cheque. And
+the feeder gets **worse**, because every roof peaks at noon so every battery
+fills at noon, and every battery therefore stops absorbing at the same moment.
+No price is involved. The correlation is in the weather and the working day.
 
-Measured on the reference week:
+One week, seed 0 — what cell 4 of the quickstart prints:
 
-| controller | export peak | ramp | coincidence | bill |
+| controller | export peak | ramp | coincidence | community CHF |
 |---|---|---|---|---|
-| do nothing | 64.6 kW | **6.3 kW** | 0.805 | 276 CHF |
-| self-consumption | 62.9 kW | **17.1 kW** | 0.788 | 299 CHF |
+| do nothing | 69.4 kW | **6.9 kW** | 0.805 | 299 |
+| self-consumption | 66.8 kW | **16.1 kW** | 0.773 | 332 |
 
-The steepest swing at the transformer gets **2.7× worse**, while every number a
+The steepest swing at the transformer gets **2.3× worse**, while every number a
 household can see improves.
 
 Better for each household, worse for the system they share. That is the school
 of fish: every fish using only what it can see from where it is, and the school
 still turning as one.
+
+## The three quantities
+
+The single most useful thing to fix in your head before writing anything:
+
+```
+p_inv_kw  (you choose)  -  load_kw  (you don't)  =  p_grid_kw  (you're billed on)
+```
+
+A controller sets the **inverter**'s active power. The household's own load
+sits behind the same meter and nobody controls it, so what the feeder carries —
+and what every tariff settles, as `grid.e_grid_kwh` — is the difference.
+Returning `0.0` idles the inverter and imports the whole load; returning
+`obs.load_forecast_kw` is what drives the grid exchange to zero.
+
+Solar and battery both sit behind that one inverter, and it serves solar
+first. Ask for more than the roof is making and the battery discharges; ask
+for less and the surplus charges it. You never address the battery directly.
+
+Everything is SI: **kW**, **kWh**, **CHF**, **per-unit** voltage. Every field
+name carries its unit, because a silent factor of four between kW and kWh is
+the easiest mistake here to make.
 
 ## The two seams
 
@@ -100,33 +129,49 @@ settlement lags by days or months, past the end of an episode, so no household
 can react to a price in time. Anticipation lives in the *parameters*, tuned
 across episodes.
 
-### And the local signal is thinner than it looks
-
-Own bus voltage correlates with feeder congestion at **+0.99**, so it looks
-like the obvious proxy for a nodal price. Then measure how much of it a
-household did not already know: regress it on own PV, own load and the clock
-and roughly **90% is already explained**. The residual — the part genuinely
-about the neighbourhood — is **0.86% of nominal** on the default feeder, just
-above what a Class 1 smart meter resolves. It is why the sandbox runs on
-`rural`: on ewz's own `urban` network that residual is 0.20%, well *below*
-meter resolution, and a controller "reading voltage" there is reading a noisy
-clock. (`scripts/measure_voltage_residual.py` regenerates all of these.)
-
-That is the real finding here, and it explains *why* herding is hard rather
-than just that it happens. Every local signal is correlated across the feeder,
-and the one that is genuinely about the neighbourhood carries almost nothing
-new. There is nearly **no idiosyncratic local information** — households move
-together because the information structure leaves them nothing to
-differentiate on.
-
-So the design space is not "read the signal better". It is to **manufacture
-differentiation where the physics provides none**: memory and hysteresis in the
-carry, deliberate desynchronisation via `key`, or a tariff that creates
-locational distinctions the voltages do not.
-
 **The controller never sees a neighbour, either.** It is written for one
 household and `vmap`'d over the population, so there is no agent axis inside it
 to index. vmap is the fairness contract, not just a speed trick.
+
+### The local signal is thin, and it is real
+
+The project is called *grid lateral line* for a reason. A fish reads the water
+it is in through a line of local pressure sensors; a household's own bus
+voltage is the closest thing it has to the same organ — local, free,
+continuously available, and genuinely coupled to what the neighbours are
+doing. It correlates with feeder congestion at **+0.99**.
+
+The caveat is not that correlation. It is **redundancy**: regress own voltage
+on own PV, own load and the clock and about **86 %** is already implied by
+things the household knew anyway. The residual — the part genuinely about the
+neighbourhood — is **1.01 % of nominal** on this feeder, twice the ~0.5 % a
+Class 1 smart meter resolves.
+
+So reading voltage is a **legitimate design**, and the sandbox runs on the
+feeder where it is legitimate. What fails is the naive version: a threshold on
+the raw level mostly fires on "it is noon and my roof is working", which every
+household on the feeder learns at the same instant. Subtract what you already
+know — or watch the trend rather than the level — and what is left is the
+neighbourhood.
+
+And the residual is **not a fixed budget**. It is small partly *because* every
+household currently runs the same rule off the same weather. A population that
+deliberately differentiates — staggered starts, hysteresis, randomised timing
+off `key` — makes its members' voltages less predictable from their own state,
+which puts information back into the residual. Reading the signal and creating
+something worth reading are the same project.
+
+That is the finding this sandbox has to offer, and it explains *why* herding is
+hard rather than just that it happens. Every local signal is correlated across
+the feeder, and the one genuinely about the neighbourhood is thin. There is
+very little **idiosyncratic local information** — households move together
+because the information structure gives them little to differentiate on.
+
+So the design space has two halves, and good submissions use both: **read what
+is there**, and **manufacture differentiation where the physics provides
+none** — through the carry, through `key`, or through a tariff that creates
+locational distinctions the voltages do not.
+(`scripts/measure_voltage_residual.py` regenerates all of these numbers.)
 
 ## Four pathways
 
@@ -136,8 +181,12 @@ to index. vmap is the fairness contract, not just a speed trick.
 2. **Design the household** — edit `my_controller` in
    [`sandbox/my_idea.py`](sandbox/my_idea.py). See
    [`CONTROLLER_COOKBOOK.md`](CONTROLLER_COOKBOOK.md).
-3. **Audit it** — `sandbox.export.to_dataframe()` gives you a tidy pandas frame. No JAX required.
-4. **Show it** — same frame; the feeder has coordinates for a map.
+3. **Audit it** — `sandbox.export.to_dataframe()` gives you a tidy pandas frame,
+   all eighteen connection points, tenants included. No JAX required.
+4. **Show it** — the same frame carries `distance_rank`, so a plot can be
+   ordered by electrical distance from the transformer. (There are no map
+   coordinates: the grid asset's `position` field is pandapower plotting
+   geodata, incomplete, and unused here.)
 
 The two design pathways are equally central, and a submission may touch either,
 both, or neither and fall back to the reference. The controller pathology is
@@ -147,47 +196,48 @@ what makes the challenge exist; the tariff is what closes it.
 
 ```python
 def my_controller(obs, carry, params, key):
-    """One household. Returns net active power at the inverter, in kW."""
-    surplus = jnp.maximum(obs.pv_available_kw - obs.load_kw, 0.0)
+    """One household. Returns the INVERTER's active power, in kW."""
+    surplus = jnp.maximum(obs.pv_available_kw - obs.load_forecast_kw, 0.0)
     export = jnp.maximum(surplus - obs.bat_charge_max_kw, 0.0)
-    return clip_to_feasible(obs.load_kw + export, obs), carry
+    p_inv_kw = clip_to_feasible(obs.load_forecast_kw + export, obs)
+    return p_inv_kw, update_memory(carry, obs, p_inv_kw)
 ```
 
-Return anything you like — it is clipped to `[p_min_kw, p_max_kw]` and then
-projected onto the physically feasible set. **A controller cannot crash the
-simulation.** Full reference: [`CONTROLLER_COOKBOOK.md`](CONTROLLER_COOKBOOK.md).
+Return anything you like — it is clipped to `[p_inv_min_kw, p_inv_max_kw]` and
+then projected onto the physically feasible set. **A controller cannot crash
+the simulation.** Full reference: [`CONTROLLER_COOKBOOK.md`](CONTROLLER_COOKBOOK.md).
 
-Everything is SI: **kW**, **kWh**, **CHF**, **per-unit** voltage. Every field
-name carries its unit, because a silent factor of four between kW and kWh is
-the easiest mistake here to make.
+### Three ways to write it — and why you want the JAX one
 
-### Three ways to write it, all interchangeable
+| tier | how | you get | one week | a tuning sweep | a `score()` |
+|---|---|---|---|---|---|
+| **jax** | plain `jnp` | the fast path | 2.0 s | 17 s | ~2 min |
+| **numpy** | [`@numpy_controller`](sandbox/numpy_bridge.py) | real `if`, loops, SciPy | 6.9 s | 128 s | ~20 min |
+| **eager** | `rollout(..., fast=False)` | tracebacks, working `print` | ~100× slower | — | — |
 
-| tier | how | you get | cost |
-|---|---|---|---|
-| **eager** | `rollout(..., fast=False)` | readable tracebacks, working `print` | 14× slower |
-| **numpy** | [`@numpy_controller`](sandbox/numpy_bridge.py) | real `if`, real loops, real SciPy | 1.4× slower |
-| **jax** | plain `jnp` | instant seed sweeps | — |
-
-The rollout cannot tell them apart, and neither can `check()` or `score()`.
-Write it eager, keep it in NumPy if you like, and score it either way — the
-results are identical, and there is a test asserting that. The same three tiers
-are open to a tariff.
+The rollout cannot tell them apart, and neither can `check()` or `score()` —
+the results are identical, and there is a test asserting it. **But write the
+finished thing in `jnp` if you possibly can.** `score()` runs four cells with
+a tuning sweep inside each; under JAX that sweep is one compile `vmap`'d
+across every candidate and seed at once, while the NumPy tier pays a host
+round trip per household per interval and cannot batch at all. Two minutes
+against twenty is the difference between ten experiments and one. Prototype
+in NumPy if it helps, then port. The same three tiers are open to a tariff.
 
 ## Writing a tariff
 
 ```python
 def my_tariff(grid, carry, params):
     """The WHOLE feeder, one interval. Returns (num_pq,) CHF, signed, and carry."""
-    return grid.energy_chf - my_congestion_term(grid, params), carry
+    return grid.fair_leg_chf - my_congestion_term(grid, params), carry
 ```
 
 What you return **is** what each of the eighteen connection points pays or
-earns for the interval. `grid.energy_chf` is one of the fields you are handed —
-what ewz's published fair-LEG rate would have settled — and the default builds
-on it, but a flat rate, a time-of-use schedule, a demand charge or a fully
-nodal price written from scratch are all just different return values from the
-same function.
+earns for the interval. `grid.fair_leg_chf` is one of the fields you are
+handed — the finished CHF settlement the fair-LEG baseline would produce, not
+a rate — and the default builds on it, but a flat rate, a time-of-use
+schedule, a demand charge or a fully nodal price written from scratch are all
+just different return values from the same function.
 
 `grid.has_inverter` is static rate-class metadata rather than a live reading,
 so a tariff can say what it means directly — a tenant floor — instead of
@@ -199,6 +249,24 @@ Two things are checked for you rather than by hand: `settlement_chf` must be
 shaped `(num_pq,)`, and revenue adequacy is gated empirically against what fair
 LEG itself collects — a tariff that pays everybody is disqualified, one that
 redistributes is not. Full reference: [`TARIFF_COOKBOOK.md`](TARIFF_COOKBOOK.md).
+
+### What fair LEG is, and is not
+
+**Fair LEG is not a product ewz sells.** It is assembled from ewz's real,
+published 2026 rate components — the EEA feed-in tariff, ewz.natur energy,
+grid usage, public duties — with one construction on top: trading inside a
+local electricity community waives 40 % of the grid usage fee, and fair LEG
+splits that saving **evenly** between injector and consumer. Symmetric by
+construction, hence the name.
+
+ewz's actual LEG product is **Solarquartier**. It grants the consumer the
+whole rebate but charges a flat 13 Rp./kWh LEG energy rate, which leaves a
+pure consumer about **5.7 Rp./kWh worse off** off-peak inside the community
+than outside it — the producer captures nearly all of the saving. That would
+be the easier baseline and the wrong one: beating a tariff that penalises
+consumers says nothing about the network. So the status quo modelled here is
+the *fair* version, already balanced between the two sides, and beating it has
+to mean saying something about congestion, diversity and ramp.
 
 ## Scoring
 
@@ -212,10 +280,12 @@ Four rollouts, not one:
 **Tailoring a controller to your tariff is the point, not a trick.** Every cell
 involving a submitted tariff **re-tunes** the controller first, because without
 that a tariff changes nothing physical at all — nobody can see it during an
-episode, so it would only redistribute. The tuner maximises the *household's
-own bill*, never the grid score: the gap between what a household wants and
-what the network needs is the mechanism design problem, and closing it is what
-designing a tariff means.
+episode, so it would only redistribute. Each controller is tuned over its own
+parameter grid: the installed base over `TUNING_GRID` in
+[`sandbox/controller.py`](sandbox/controller.py), yours over `TUNE_OVER` in
+`my_idea.py`. The tuner maximises the *household's own bill*, never the grid
+score: the gap between what a household wants and what the network needs is
+the mechanism design problem, and closing it is what designing a tariff means.
 
 What the four cells separate is *when*. ewz publishes a tariff; it does not
 choose anybody's controller. Households do that, in their own interest — and
@@ -236,7 +306,10 @@ shape you propose exist.
 
 The gap between them is the **co-design premium**. Reported, not gated: it is
 not a penalty but a statement of how far the market has to move before your
-mechanism pays in full.
+mechanism pays in full. It can come out **negative** on a metric, and that is
+informative rather than an error — it means today's controller happens to
+serve that metric better under your price than the one you propose, which is
+usually a sign your controller is trading that metric for another.
 
 The jury is [`sandbox/metrics.py`](sandbox/metrics.py), fixed and not editable:
 
@@ -253,7 +326,34 @@ The jury is [`sandbox/metrics.py`](sandbox/metrics.py), fixed and not editable:
 
 One hard gate: **revenue adequacy**. A tariff that simply pays everybody
 produces a delighted population and a bankrupt network operator, so it is
-disqualified rather than ranked.
+disqualified rather than ranked. It is checked with behaviour held fixed — a
+tariff that makes households export less collects less, and that is the tariff
+working, not printing money.
+
+### Reading the output
+
+`score()` prints one row per cell, keyed `tariff/controller`:
+
+| column | meaning | better |
+|---|---|---|
+| `export_pk_kW` / `draw_pk_kW` | transformer peak, exporting / drawing | lower |
+| `reverse` | share of the week the feeder runs backwards | lower |
+| `coincid` | coincidence factor — everyone acting at once | lower |
+| `ramp_kW` | steepest interval-to-interval swing at the transformer | lower |
+| `corr` | mean pairwise correlation of household power changes | lower |
+| `loss` | network losses as a share of energy served | lower |
+| `curtail` | generation thrown away | lower |
+| `selfcons` | generation used behind the meter | higher |
+| `CHF` | what the community earned, summed over all 18 points | higher |
+| `>1.05` | share of bus-intervals above the planning trigger | lower |
+
+Then `revenue adequacy: PASS/FAIL` and the co-design premium, then five of
+those columns restated in plain words.
+
+**Read the whole row.** The shipped default tariff halves the export peak and
+improves the ramp — by making the tuned household cap its exports and curtail
+a quarter of the week's generation, which collapses the community's earnings.
+`curtail` and `CHF` are in the jury precisely so that cannot pass quietly.
 
 ## Handing it in
 
@@ -279,28 +379,6 @@ In the PR description, say what you tried and what the numbers did — paste the
 `score()` output, and tell us what you expected that did not happen. A
 submission that explains a negative result is worth more than one that only
 shows the run that worked.
-
-## Which feeder, and why it matters
-
-The default is `rural` — a long feeder, end-of-line impedance 0.91 Ω, about
-twice IEC 60725's reference. Voltage crosses the 1.05 pu planning trigger on
-about 9% of bus-intervals — the `>1.05` column `score()` prints — and peaks at
-1.10, right at the EN 50160 limit. That is a genuine standards violation rather
-than a modelling artefact, and it is what gives a household something local to
-read.
-
-`FEEDER_STRENGTHS` also ships **`urban`** — ewz's own network, unmodified.
-There over-voltage simply never happens, because a dense meshed feeder is stiff
-and never leaves 1.02. But meshing buys voltage stiffness and no thermal
-capacity, so what binds instead is throughput: the feeder runs backwards for
-47% of the week, its export peak is several times its largest draw, and the
-diversity the network was planned under is gone. Same population, same jury,
-different binding constraint — and which one bites where is worth a submission
-on its own.
-
-Turning the grid code off instead of weakening the feeder was measured and
-does almost nothing: Q(U) only acts outside its deadband, and on a stiff
-feeder voltage never gets there.
 
 ## The feeder
 
@@ -328,7 +406,30 @@ load-bearing: sizing inverters to the array was measured to collapse control
 authority to zero, because a household that can export everything never needs
 its battery.
 
-A full week runs in about **one second**; a 20-seed ensemble in **eight**.
+A full week runs in about **two seconds**.
+
+### Which feeder — and no, you cannot change it
+
+**The hackathon runs on `rural`**, a long feeder with an end-of-line impedance
+of 0.91 Ω, about twice IEC 60725's reference. Voltage crosses the 1.05 pu
+planning trigger on about 8.7 % of bus-intervals — the `>1.05` column
+`score()` prints — and peaks at 1.107, right at the EN 50160 limit.
+
+The reason is the household seam. On ewz's own `urban` network the
+neighbourhood-only residual in the voltage signal is 0.25 % of nominal, below
+what a real meter resolves, so a controller reading voltage there is reading a
+noisy clock and the controller pathway would be a dead end by construction.
+`rural` lifts that residual to 1.01 % — twice meter resolution — and gives a
+household something genuine to read.
+
+What does *not* change with the feeder is the pathology itself: reverse flow
+sits at 42 % of the week and the coincidence factor at 0.79 on all three
+strengths in `FEEDER_STRENGTHS`. Diversity is purely behavioural, so the
+herding this challenge is about is the same problem on a stiff meshed city
+network as on a long rural line — only the export peak and the voltage move.
+`urban` and `suburban` remain in the code because the comparison is
+instructive and because `scripts/measure_voltage_residual.py` sweeps all
+three, not because they are options: every submission is scored on `rural`.
 
 ## Layout
 
@@ -348,13 +449,19 @@ sandbox/
 └── export.py          tidy frames, no JAX needed
 
 scripts/
-└── measure_voltage_residual.py   regenerates the residual table above
+└── measure_voltage_residual.py   regenerates the residual numbers above
 ```
 
 `tariff.py` and `controller.py` are where `my_idea.py`'s two functions actually
 get wired in, and where the escape hatches live for anyone who outgrows a plain
 function — a stateful tariff (`MyTariff`), a `@numpy_controller`. Most
 submissions never need to open either.
+
+The tests are the executable version of the claims above:
+
+```bash
+uv run pytest
+```
 
 The repo shares `gll_env`'s pre-commit setup (ruff, `ty`, whitespace, licence
 headers, conventional commits). It is not required to participate:

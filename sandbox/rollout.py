@@ -30,11 +30,12 @@ Two speeds, same semantics:
 
 * ``fast=True`` -- ``lax.scan`` over a jitted step, ``vmap`` over households.
 * ``fast=False`` -- a Python loop, and a list comprehension instead of vmap.
-  Roughly a hundred times slower, and worth every bit of it while you are
-  writing a controller: values are concrete, so ``if`` works, ``print`` works,
-  and a traceback points at your line instead of at a tracer.
+  Around 100x slower per interval, and worth every bit of it while you are
+  writing a controller: values are concrete, so ``if`` works, ``print``
+  works, and a traceback points at your line instead of at a tracer.
 
-Write it eager, score it fast. The results are identical.
+Write it eager, score it fast. The results are identical, and
+``tests/test_scenarios.py`` asserts it.
 """
 
 from typing import Any, Callable, Optional
@@ -72,13 +73,15 @@ class Trajectory:
     """One episode, time-major. Every array has a leading axis of ``n_steps``.
 
     Attributes:
-        p_set_kw: (T, num_agents) What each controller asked for.
-        p_realized_kw: (T, num_agents) What it actually got, after the
+        p_inv_set_kw: (T, num_agents) The inverter setpoint each controller
+            asked for.
+        p_inv_realized_kw: (T, num_agents) What it actually got, after the
             environment's feasibility projection. The gap between this and
-            ``p_set_kw`` is how much a controller is asking for and not
+            ``p_inv_set_kw`` is how much a controller is asking for and not
             receiving.
-        meter_kwh: (T, num_pq) Net energy at every connection point, tenants
-            included.
+        e_grid_kwh: (T, num_pq) Net energy exchanged with the grid at every
+            connection point -- inverter output minus household load, tenants
+            included. This, not ``p_inv_*``, is what a tariff settles.
         reward_chf: (T, num_agents) Per-agent settlement, aligned with the
             interval it describes.
         settlement_chf: (T, num_pq) The same settlement over *all* connection
@@ -90,7 +93,7 @@ class Trajectory:
             nowhere to put it. Under a Q(U) grid code this, rather than
             over-voltage, is usually what binds: the code holds voltage by
             absorbing reactive power and, past that, by curtailing.
-        q_meter_kvarh: (T, num_pq) Reactive energy at each connection point.
+        q_grid_kvarh: (T, num_pq) Reactive energy at each connection point.
             Mostly the grid code's doing, and a real cost to the network.
         transformer_kw: (T,) Active power through the substation transformer,
             positive when the feeder draws from the grid and negative when it
@@ -106,14 +109,14 @@ class Trajectory:
         valid: (T,) Whether the power flow converged.
     """
 
-    p_set_kw: chex.Array
-    p_realized_kw: chex.Array
-    meter_kwh: chex.Array
+    p_inv_set_kw: chex.Array
+    p_inv_realized_kw: chex.Array
+    e_grid_kwh: chex.Array
     reward_chf: chex.Array
     settlement_chf: chex.Array
     pv_available_kw: chex.Array
     pv_realized_kw: chex.Array
-    q_meter_kvarh: chex.Array
+    q_grid_kvarh: chex.Array
     transformer_kw: chex.Array
     transformer_kvar: chex.Array
     losses_kw: chex.Array
@@ -137,9 +140,11 @@ def build_model(
     Built component by component rather than through
     :func:`gll_env.factories.environment_model`, for one reason: the grid is
     constructed from *modified* asset arrays. The bundled CIGRE feeder is a
-    short urban one and the congestion this challenge is about happens on
-    suburban feeders, so the LV network is weakened to the IEC 60725 reference
-    impedance. See :data:`sandbox.scenarios.FEEDER_IMPEDANCE_SCALE`.
+    short urban one, and the congestion this challenge is about happens on
+    longer, weaker feeders, so its LV branch impedances are scaled up to the
+    ``rural`` strength -- about twice IEC 60725's reference LV impedance. See
+    :data:`sandbox.scenarios.FEEDER_IMPEDANCE_SCALE`, which is fixed for the
+    hackathon.
 
     `tariff` replaces the reward named in the population's config. It is the
     tariff seam: pass :func:`sandbox.tariff.default_tariff` to score your own
@@ -195,7 +200,7 @@ def _tile_carry(carry: Any, num_agents: int) -> Any:
 def _record(
     model: Any,
     state: Any,
-    p_set_kw: chex.Array,
+    p_inv_kw: chex.Array,
     timestep: Any,
     pv_available_kw: chex.Array,
 ) -> dict[str, chex.Array]:
@@ -203,14 +208,14 @@ def _record(
     prosumer_state = state.prosumer_state
     solar = timestep.observation.prosumer_observation.inverter_observation.solar_observation
     return {
-        "p_set_kw": p_set_kw,
-        "p_realized_kw": jnp.real(prosumer_state.inverter_state.s_inv_realized_kvah) / step_h,
-        "meter_kwh": jnp.real(prosumer_state.s_pq_realized_kvah),
+        "p_inv_set_kw": p_inv_kw,
+        "p_inv_realized_kw": jnp.real(prosumer_state.inverter_state.s_inv_realized_kvah) / step_h,
+        "e_grid_kwh": jnp.real(prosumer_state.s_pq_realized_kvah),
         # Recorded against the availability the controller was shown, so the
         # two describe the same interval and their difference is curtailment.
         "pv_available_kw": pv_available_kw,
         "pv_realized_kw": jnp.asarray(solar.sol_realized) / step_h,
-        "q_meter_kvarh": jnp.imag(prosumer_state.s_pq_realized_kvah),
+        "q_grid_kvarh": jnp.imag(prosumer_state.s_pq_realized_kvah),
         # The slack IS the medium-voltage side of the transformer, so its
         # injection is the whole feeder's throughput. Load convention:
         # positive means the feeder is DRAWING from the grid, negative means
@@ -272,8 +277,8 @@ def rollout(
     ) -> tuple[chex.Array, Any, LocalObservation]:
         local = to_local(model, observation, state)
         keys = jax.random.split(key, num_agents)
-        p_set_kw, carry = per_agent(local, carry, params, keys)
-        return p_set_kw, carry, local
+        p_inv_kw, carry = per_agent(local, carry, params, keys)
+        return p_inv_kw, carry, local
 
     def decide_eager(
         observation: Any, state: Any, carry: Any, key: chex.PRNGKey
@@ -305,10 +310,10 @@ def rollout(
     ) -> tuple[tuple[Any, Any, Any, chex.PRNGKey], dict[str, chex.Array]]:
         state, observation, carry, key = loop_state
         key, decide_key = jax.random.split(key)
-        p_set_kw, carry, local = decide(observation, state, carry, decide_key)
+        p_inv_kw, carry, local = decide(observation, state, carry, decide_key)
         # NOTE: timestep.reward is deliberately NOT passed on. See module docs.
-        new_state, new_timestep = env.step(state, to_action(model, p_set_kw))
-        record = _record(model, new_state, p_set_kw, new_timestep, local.pv_available_kw)
+        new_state, new_timestep = env.step(state, to_action(model, p_inv_kw))
+        record = _record(model, new_state, p_inv_kw, new_timestep, local.pv_available_kw)
         return (new_state, new_timestep.observation, carry, key), record
 
     if fast:
@@ -321,10 +326,10 @@ def rollout(
     collected: list[dict[str, chex.Array]] = []
     for _ in range(n_steps):
         loop_key, decide_key = jax.random.split(loop_key)
-        p_set_kw, carry, local = decide_eager(observation, state, carry, decide_key)
-        state, timestep = env.step(state, to_action(model, p_set_kw))
+        p_inv_kw, carry, local = decide_eager(observation, state, carry, decide_key)
+        state, timestep = env.step(state, to_action(model, p_inv_kw))
         observation = timestep.observation
-        collected.append(_record(model, state, p_set_kw, timestep, local.pv_available_kw))
+        collected.append(_record(model, state, p_inv_kw, timestep, local.pv_available_kw))
 
     return Trajectory(
         **{key: jnp.stack([record[key] for record in collected]) for key in collected[0]}

@@ -15,17 +15,27 @@
 
 """One of the two seams you edit: the household controller.
 
-A controller decides one number per interval -- **net active power at the
-inverter, in kW, positive when injecting** -- for **one** household. The
-harness ``jax.vmap``s it over the population.
+A controller decides one number per interval, for **one** household::
 
-That is not only a speed trick. Because your function is written for a single
-household, there is no agent axis inside it and you *cannot* reference a
-neighbour, even by accident. vmap is the fairness contract.
+    def controller(obs, carry, params, key) -> (p_inv_kw, carry)
 
-The signature::
+``p_inv_kw`` is **active power out of the inverter, in kW, positive when the
+inverter is producing.** It is *not* the flow at the grid connection. The
+household's own load sits behind the same meter and nobody controls it, so
+what the feeder sees -- and what every tariff settles -- is::
 
-    def controller(obs, carry, params, key) -> (p_set_kw, carry)
+    p_grid_kw = p_inv_kw - load_kw
+
+Returning ``p_inv_kw = 0`` idles the inverter and imports the whole load;
+returning ``p_inv_kw = obs.load_forecast_kw`` is what drives the grid
+exchange to zero. :class:`~sandbox.observation.LocalObservation` carries the
+whole picture: ``load_forecast_kw`` for the coming interval, and
+``p_grid_kw`` for what last interval's request actually came to.
+
+The harness ``jax.vmap``s the function over the population. That is not only
+a speed trick: because it is written for a single household there is no agent
+axis inside it and you *cannot* reference a neighbour, even by accident. vmap
+is the fairness contract.
 
 * ``obs``    -- :class:`~sandbox.observation.LocalObservation`, all scalars.
 * ``carry``  -- your household's memory, carried between intervals. Must be a
@@ -35,9 +45,9 @@ The signature::
 * ``key``    -- a fresh PRNG key per household per interval. Use it if you
   want to break symmetry -- see the note on desynchronization below.
 
-Return anything you like; the harness clips to ``[p_min_kw, p_max_kw]`` and
-the environment projects whatever survives onto the physically feasible set.
-A controller cannot crash the simulation.
+Return anything you like; the harness clips to ``[p_inv_min_kw,
+p_inv_max_kw]`` and the environment projects whatever survives onto the
+physically feasible set. A controller cannot crash the simulation.
 
 On the carry, and desynchronization
 -----------------------------------
@@ -47,6 +57,31 @@ curtailed" lives. It is also where **deliberate staggering** lives: a
 household that remembers what it just did can offset itself against its
 neighbours. Hysteresis and randomized start times are legitimate answers to
 herding, and they are pure carry mechanisms.
+
+Randomness, and why ``key`` is a key
+------------------------------------
+``key`` is a JAX PRNG key, freshly split per household per interval, so
+identical households draw *different* numbers -- which is the entire point.
+JAX has no hidden global RNG state: you pass a key in and get numbers out,
+and the same key always gives the same numbers, which is what keeps a scored
+run reproducible. Draw from it directly and you need no state at all::
+
+    jitter_h = jax.random.uniform(key, minval=-1.0, maxval=1.0)  # per household
+    start_h = params["charge_after_hour"] + params["jitter_h"] * jitter_h
+
+That draws afresh every interval, which is right for adding noise to an
+action and wrong for a *start time* -- a household whose start hour rerolls
+every fifteen minutes has no start hour. For a per-household constant, draw
+once and keep it in the carry::
+
+    offset = jnp.where(carry.intervals == 0,
+                       jax.random.uniform(key, minval=0.0, maxval=params["spread_h"]),
+                       carry.offset_h)
+
+Two rules and nothing more: never reuse a key for two different draws (split
+it -- ``k1, k2 = jax.random.split(key)``), and remember that any parameter
+you randomize over is still tuned as a *distribution* across episodes, not
+picked per run.
 """
 
 from typing import Any, Callable, Protocol
@@ -84,7 +119,7 @@ def init_memory() -> Memory:
 
 
 class ControllerFn(Protocol):
-    """``(obs, carry, params, key) -> (p_set_kw, carry)`` for one household."""
+    """``(obs, carry, params, key) -> (p_inv_kw, carry)`` for one household."""
 
     def __call__(
         self,
@@ -106,7 +141,7 @@ class Controller:
         init_carry: Builds one household's starting memory.
 
     Parameters are shared deliberately. Heterogeneity lives in the *state* --
-    a tenant has ``p_min_kw == p_max_kw == 0`` and the same parameters produce
+    a tenant has ``p_inv_min_kw == p_inv_max_kw == 0`` and the same parameters produce
     no action from them -- so one tuning run covers a mixed population and
     there is no per-agent best-response game to chase. Supply parameters with
     a leading agent axis if you want per-household values anyway.
@@ -118,23 +153,23 @@ class Controller:
     init_carry: Callable[[], Any]
 
 
-def clip_to_feasible(p_set_kw: chex.Array, obs: LocalObservation) -> chex.Array:
+def clip_to_feasible(p_inv_kw: chex.Array, obs: LocalObservation) -> chex.Array:
     """Clamp a request into this household's own feasible interval.
 
     The harness does this for you. It is exported because doing it *inside* a
     controller is often what you want: a rule that saturates should know it
     saturated, and can then record that in its carry.
     """
-    return jnp.clip(p_set_kw, obs.p_min_kw, obs.p_max_kw)
+    return jnp.clip(p_inv_kw, obs.p_inv_min_kw, obs.p_inv_max_kw)
 
 
-def update_memory(carry: Memory, obs: LocalObservation, p_set_kw: chex.Array) -> Memory:
+def update_memory(carry: Memory, obs: LocalObservation, p_inv_kw: chex.Array) -> Memory:
     """Roll the default carry forward. ``voltage_ewma_pu`` uses a 24-interval
     (six hour) time constant -- long enough to describe the neighbourhood
     rather than this instant, short enough to move within a day."""
     alpha = 1.0 / 24.0
     return Memory(
-        p_prev_kw=p_set_kw,
+        p_prev_kw=p_inv_kw,
         voltage_ewma_pu=(1.0 - alpha) * carry.voltage_ewma_pu + alpha * obs.voltage_pu,
         intervals=carry.intervals + 1,
     )
@@ -154,14 +189,28 @@ def self_consumption(
     """Cover your own load, bank the rest. What every home battery does by default.
 
     Asking the inverter for exactly the household's own consumption drives the
-    meter to zero, and the inverter dispatches solar before battery, so the
-    battery takes up whatever is left -- charging on surplus, discharging on
-    shortfall.
+    grid exchange to zero, and the inverter dispatches solar before battery, so
+    the battery takes up whatever is left -- charging on surplus, discharging
+    on shortfall.
 
     The second term is what stops that quietly curtailing. Once the battery
     cannot absorb any more, surplus generation has nowhere to go and the
     inverter throws it away rather than exporting it. A real household
     exports, so ask for the part of the surplus the battery cannot take.
+
+    **It deliberately uses ``obs.load_kw``, last interval's load, and not
+    ``obs.load_forecast_kw``, the coming one.** That is a real product, not a
+    typo: a home battery servos against the net reading its meter is
+    reporting *now*, so it always chases the load by one control period.
+    Modelling it with the forecast would flatter the installed base and hide
+    a headroom you are meant to be able to take. What the lag costs, measured
+    over twenty weeks: unintended grid exchange of 0.445 kWh per
+    agent-interval where the forecast leaves 0.436, self-consumption share
+    29.4 % where the forecast reaches 30.3 %, and about 3 CHF a week across
+    the community. Swapping in ``load_forecast_kw`` is the cheapest correct
+    edit available -- and, as those numbers say, worth a couple of per cent
+    and *nothing at all* on peak, ramp or coincidence. It is a warm-up, not a
+    strategy.
 
     At its default parameters this is exactly the out-of-the-box behaviour of
     essentially every residential storage product -- and it is **the thing
@@ -190,8 +239,8 @@ def self_consumption(
     absorbable_kw = jnp.where(charging_allowed, obs.bat_charge_max_kw, 0.0)
     export_kw = jnp.minimum(jnp.maximum(surplus_kw - absorbable_kw, 0.0), params["export_cap_kw"])
 
-    p_set_kw = clip_to_feasible(obs.load_kw + export_kw, obs)
-    return p_set_kw, update_memory(carry, obs, p_set_kw)
+    p_inv_kw = clip_to_feasible(obs.load_kw + export_kw, obs)
+    return p_inv_kw, update_memory(carry, obs, p_inv_kw)
 
 
 def self_consumption_params() -> dict[str, chex.Array]:
@@ -240,8 +289,8 @@ def passive(
     problem" apart from "suppressed all activity".
     """
     del params, key
-    p_set_kw = clip_to_feasible(obs.pv_available_kw, obs)
-    return p_set_kw, update_memory(carry, obs, p_set_kw)
+    p_inv_kw = clip_to_feasible(obs.pv_available_kw, obs)
+    return p_inv_kw, update_memory(carry, obs, p_inv_kw)
 
 
 def passive_controller() -> Controller:
@@ -253,88 +302,7 @@ def passive_controller() -> Controller:
     )
 
 
-# ---------------------------------------------------------------------------
-# Your controller
-# ---------------------------------------------------------------------------
-
-
-def my_controller(
-    obs: LocalObservation,
-    carry: Memory,
-    params: dict[str, chex.Array],
-    key: chex.PRNGKey,
-) -> tuple[chex.Array, Memory]:
-    """**EDIT ME.** Starts as greedy self-consumption with a voltage nudge.
-
-    The nudge is the smallest possible gesture at the real question: back off
-    injecting when your own terminal voltage is already high, since that is
-    the local, measurable signature of a congested feeder. It is deliberately
-    crude -- it reacts to *this* interval's voltage, so every household backs
-    off in the same interval, which is exactly the herding this challenge is
-    about. Beating it means anticipating instead.
-
-    Ideas that need no price: use ``load_forecast_kw`` rather than ``load_kw``;
-    hold charge back for the evening peak using the clock; watch
-    ``carry.voltage_ewma_pu`` for a trend rather than a level; stagger against
-    your neighbours using ``key``.
-    """
-    del key
-    # Start from working self-consumption, then trim exports when this
-    # household's own terminal voltage says the neighbourhood is already
-    # pushing hard. Everything above is what a real battery does; only the
-    # `allowance_kw` line is the design.
-    surplus_kw = jnp.maximum(obs.pv_available_kw - obs.load_kw, 0.0)
-    export_kw = jnp.maximum(surplus_kw - obs.bat_charge_max_kw, 0.0)
-
-    # Voltage droop, trimming the standing allowance. Note the scale: on a
-    # stiff feeder `excess_pu` is a few thousandths, so `droop_kw_per_pu` has
-    # to be in the hundreds before it changes anything -- and if the allowance
-    # it trims never binds in the first place, nothing happens at any gain.
-    excess_pu = jnp.maximum(obs.voltage_pu - params["voltage_setpoint_pu"], 0.0)
-    allowance_kw = jnp.maximum(params["export_cap_kw"] - params["droop_kw_per_pu"] * excess_pu, 0.0)
-
-    p_set_kw = clip_to_feasible(obs.load_kw + jnp.minimum(export_kw, allowance_kw), obs)
-    return p_set_kw, update_memory(carry, obs, p_set_kw)
-
-
-def my_controller_params() -> dict[str, chex.Array]:
-    """Starting parameters. These are what you tune across episodes."""
-    return {
-        # The allowance a droop of zero leaves in place. Start it where it
-        # does not bind, so the default really is plain self-consumption.
-        "export_cap_kw": jnp.float32(1.0e3),
-        # Where "my neighbourhood is pushing hard" begins. On the urban feeder
-        # voltage barely reaches 1.02, so a setpoint above that never fires --
-        # check the range you are actually working in before picking one.
-        "voltage_setpoint_pu": jnp.float32(1.005),
-        # kW of allowance surrendered per pu of excess. Zero by default: the
-        # example does nothing until you or a tuner make it.
-        "droop_kw_per_pu": jnp.float32(0.0),
-    }
-
-
-#: What a tuner sweeps for :func:`my_controller`. Yours should name whichever
-#: of your own parameters are worth searching; anything omitted keeps its
-#: default.
-MY_TUNING_GRID: dict[str, list[float]] = {
-    "export_cap_kw": [1.0e3, 6.0, 3.0],
-    "voltage_setpoint_pu": [1.000, 1.010],
-    "droop_kw_per_pu": [0.0, 300.0],
-}
-
-
-def my_controller_bundle() -> Controller:
-    return Controller(
-        name="my_controller",
-        fn=my_controller,
-        params=my_controller_params(),
-        init_carry=init_memory,
-    )
-
-
 __all__ = [
-    "MY_TUNING_GRID",
-    "TUNING_GRID",
     "Controller",
     "ControllerFn",
     "LocalObservation",
@@ -342,9 +310,6 @@ __all__ = [
     "base_controller",
     "clip_to_feasible",
     "init_memory",
-    "my_controller",
-    "my_controller_bundle",
-    "my_controller_params",
     "passive",
     "passive_controller",
     "self_consumption",

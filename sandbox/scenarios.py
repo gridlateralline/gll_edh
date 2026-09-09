@@ -35,12 +35,14 @@ Naive control must **stress the network**, and a better controller must be
 able to do something about it. Both are calibration targets to verify, not
 assumptions -- see ``tests/test_scenarios.py``.
 
-"Stress" here does not mean over-voltage. On the default urban feeder voltage
-never leaves the band, and that is correct rather than a failure to size: a
-meshed city network is stiff, and ewz's own operational experience is that
-over-voltage is not what constrains it. What binds is reverse flow through a
-transformer specified for one direction, the loss of diversity that network
-planning depends on, and the ramp. See :mod:`sandbox.metrics`.
+"Stress" is not only over-voltage. On the ``rural`` feeder this challenge
+runs on, voltage does cross the planning trigger -- about 8.7 % of
+bus-intervals sit above 1.05 pu and the week peaks at 1.107, right at the
+EN 50160 limit. But the constraints that bind everywhere, ``urban``
+included, are the ones the jury weights most: reverse flow through a
+transformer specified for one direction (42 % of the week), the loss of the
+diversity network planning depends on, and the ramp. See
+:mod:`sandbox.metrics`.
 
 Two ways to mis-size, and the second is less obvious:
 
@@ -80,57 +82,56 @@ GRID_MODEL = "cigre_lv_consumer"
 
 #: Multiplier on the low-voltage network impedance -- see :func:`weaken_feeder`.
 #:
-#: The bundled CIGRE feeder has an end-of-line Thevenin impedance of about
-#: 0.135 ohm, which is a short, generously dimensioned *urban* feeder -- a fair
-#: model of a dense city network. But PV congestion is not an urban
-#: phenomenon. It bites on suburban and rural feeders: longer runs, thinner
-#: conductor, detached houses with large roofs and low coincident load.
+#: The bundled CIGRE feeder is a short, generously dimensioned, meshed *urban*
+#: network with an end-of-line Thevenin impedance of 0.135 ohm. PV congestion
+#: is not an urban phenomenon, though: it bites on longer runs of thinner
+#: conductor serving detached houses with large roofs and low coincident load.
+#: So the LV branch impedances are scaled to reach a feeder where it does.
 #:
-#: Named feeder strengths, as a multiplier on the LV branch impedance.
+#: ``urban``     1.0x -- 0.135 ohm, the bundled asset untouched.
+#: ``suburban``  3.5x -- 0.459 ohm, the magnitude of IEC 60725's reference LV
+#:                       network impedance (0.4 + j0.25 ohm).
+#: ``rural``     7.0x -- 0.912 ohm, roughly twice IEC 60725. A long feeder
+#:                       where a single 5 kW injection moves local voltage by
+#:                       around 3 %.
 #:
-#: ``urban`` is the bundled CIGRE asset untouched -- a short, generously
-#: dimensioned, meshed city feeder with an end-of-line Thevenin impedance of
-#: 0.135 ohm. It is ewz's own situation, and on it **over-voltage never
-#: happens**: voltage stays inside 1.02 pu whatever anyone does, because
-#: meshing buys voltage stiffness. What it does not buy is thermal capacity,
-#: and the reverse-flow peak here runs at three times the forward peak for
-#: some 44 % of the week. That is the real constraint, and it is the default.
-#:
-#: ``suburban`` scales to 0.46 ohm, the magnitude of IEC 60725's reference LV
-#: network impedance (0.4 + j0.25 ohm). ``rural`` reaches 0.91 ohm, roughly
-#: twice it -- a long feeder where a single 5 kW injection moves local voltage
-#: by around 3 %, and where over-voltage becomes a binding constraint rather
-#: than a curiosity.
-#:
-#: Same population, same jury, different binding constraint. Which one binds
-#: where is itself worth a submission.
+#: **The hackathon runs on ``rural`` and that is not a setting to change.**
+#: Every submission is scored on it; :data:`FEEDER_IMPEDANCE_SCALE` below
+#: says why. The other two are kept because the comparison is instructive
+#: (and because :mod:`scripts.measure_voltage_residual` sweeps all three),
+#: not because they are options.
 FEEDER_STRENGTHS: dict[str, float] = {
     "urban": 1.0,
     "suburban": 3.5,
     "rural": 7.0,
 }
 
-#: The hackathon runs on ``rural``, and the reason is the household seam.
+#: The feeder every submission is scored on. **Fixed for the hackathon.**
 #:
-#: On ``urban`` a household has essentially nothing to read: own bus voltage
-#: correlates with congestion at +0.99, but 87 % of it is already implied by
-#: that household's own PV, own load and the clock, leaving a residual of
-#: 0.20 % of nominal -- well below what a Class 1 meter resolves.
-#: A controller "reading voltage" there is reading a noisy clock.
+#: The reason is the household seam. On ``urban`` a household has essentially
+#: nothing local to read: own bus voltage correlates with congestion at
+#: +0.99, but about 86 % of it is already implied by that household's own PV,
+#: own load and the clock, leaving a residual of 0.25 % of nominal -- below
+#: the ~0.5 % a Class 1 meter resolves. A controller "reading voltage"
+#: there is reading a noisy clock, and the controller pathway would be a
+#: dead end by construction.
 #:
-#: ``rural`` lifts that residual to 0.86 %, comfortably measurable, and takes
-#: over-voltage from never to about 9 % of bus-intervals. Turning the grid
-#: code off instead was measured and does almost nothing: Q(U) only acts
-#: outside its deadband, and on a stiff feeder voltage never gets there.
+#: ``rural`` lifts that residual to 1.01 %, twice meter resolution, and takes
+#: over-voltage from never to about 8.7 % of bus-intervals. Turning the grid
+#: code off instead of weakening the feeder was measured and does almost
+#: nothing: Q(U) only acts outside its deadband, and on a stiff feeder
+#: voltage never gets there.
+#:
+#: What does *not* change with the feeder is the rest of the pathology.
+#: Reverse flow sits at 42 % of the week and the coincidence factor at 0.79
+#: on all three -- diversity is purely behavioural, so the herding this
+#: challenge is about is the same problem on ewz's own meshed network as on
+#: a long rural line. Only the export peak and the voltage move
+#: (68 kW / 1.107 pu rural, 81 kW / 1.023 pu urban).
 #:
 #: The residuals come from ``scripts/measure_voltage_residual.py``; re-run it
 #: rather than editing them here, and update the table in
 #: :mod:`sandbox.observation` in the same breath.
-#:
-#: ``urban`` remains available and remains the truthful model of ewz's own
-#: meshed network, where over-voltage is not the constraint and reverse flow
-#: and lost diversity are. Which constraint binds where is a submission in
-#: its own right.
 FEEDER_IMPEDANCE_SCALE = FEEDER_STRENGTHS["rural"]
 
 #: Weather that persists for days rather than jittering hourly. The two are a
@@ -212,17 +213,11 @@ REFERENCE_POPULATION: tuple[HouseholdType, ...] = (
         s_inv_max_kva=0.0,
         far_end=False,
     ),
-    # pv_only carries only 2 of the 12 agent slots, down from the 5 this
-    # population shipped with before the connection points were ranked by
-    # true electrical distance (see _feeder_order). A pv_only household can
-    # only curtail; it cannot shift. Once the far group sits at the buses
-    # the physics actually says are remote, having most of the agent
-    # population be curtail-only leaves the naive controller with too little
-    # authority to beat doing nothing (measured: naive/do-nothing peak ratio
-    # landed at ~1.0 across most seeds) and lets herding vary with feeder
-    # strength more than it should (diversity spread ~0.0125 against a
-    # 0.01 budget). Shifting slots to battery-equipped types (below) restores
-    # both margins -- see tests/test_scenarios.py.
+    # Only 2 of the 12 agent slots. A pv_only household can curtail but not
+    # shift, so a population made mostly of them leaves control with too
+    # little authority to beat doing nothing at all, and lets herding vary
+    # with feeder strength more than it should. Both margins are asserted in
+    # tests/test_scenarios.py.
     HouseholdType(
         name="pv_only",
         count=2,
@@ -375,11 +370,11 @@ def _self_impedance_to_slack(scale: float = FEEDER_IMPEDANCE_SCALE) -> np.ndarra
     turns the worst entry into ohms, and :func:`_feeder_order`, which ranks
     every connection point by it.
 
-    Deliberately not the grid asset's ``position`` (x, y) field: that comes
-    from pandapower's plotting geodata, not cable length or impedance,
-    gll_env never reads it for anything but serialization, and on this asset
-    at least one bus is missing geodata and silently defaults to (0, 0) --
-    see the note on :func:`_feeder_order`.
+    Deliberately not the grid asset's ``position`` (x, y) field: that is
+    pandapower plotting geodata, carried through gll_env unused, and it is
+    not a measurement of cable length or impedance. It is also incomplete --
+    one bus has none and silently reads (0, 0). Nothing in ``sandbox/`` uses
+    it, and neither should a submission.
     """
     arrays = grid_arrays(scale)
     admittance = np.asarray(arrays["admittance"]).astype(np.complex128)
@@ -408,21 +403,14 @@ def _feeder_order() -> np.ndarray:
     """Connection points ordered by electrical distance from the transformer,
     nearest first.
 
-    Ranked by :func:`_self_impedance_to_slack` -- computed from the network's
-    own admittance matrix, at the feeder strength (``FEEDER_IMPEDANCE_SCALE``,
-    i.e. ``rural``) this scenario actually runs on -- rather than the grid
-    asset's ``position`` field.
+    Ranked by :func:`_self_impedance_to_slack`, computed from the network's
+    own admittance matrix at ``FEEDER_IMPEDANCE_SCALE``.
 
-    That field is pandapower plotting geodata carried through
-    unused by gll_env for anything but serialization (see
-    ``gll_env.components.grid.GridDynamics``), not a measurement of cable
-    length or impedance, and unreliable even as a proxy for it: on this
-    asset bus 18 -- 11 hops down the backbone, the single deepest connection
-    point on the whole feeder by hop count -- has no geodata and silently
-    defaults to ``(0, 0)``, almost on top of the slack. Ranking by that field
-    placed the network's most electrically remote connection point in the
-    "near" group, handing it a household type with no PV, no battery, and no
-    way to generate the voltage signal it sits closest to producing.
+    Not by the grid asset's ``position`` field, which is pandapower plotting
+    geodata and incomplete: bus 18 -- 11 hops down the backbone, the deepest
+    connection point on the feeder -- has none and reads ``(0, 0)``, almost
+    on top of the slack. Ranking by it put the most electrically remote
+    connection point in the "near" group.
     """
     return np.argsort(_self_impedance_to_slack(), kind="stable")
 
@@ -503,9 +491,11 @@ def assign_population(
                     },
                 },
             },
-            # Fair LEG: ewz's published local-electricity-community tariff, and
-            # therefore the status quo. The challenge is to beat what is
-            # actually done today, not a toy.
+            # Fair LEG: the baseline settlement. Built from ewz's published
+            # 2026 rate components with the LEG grid-usage rebate split
+            # evenly between injector and consumer -- see `base_payments` in
+            # sandbox/tariff.py for why that, and not ewz's own Solarquartier
+            # product, is the status quo worth beating.
             "reward": {"name": "leg_settlement", "payments": "fair_leg"},
         }
     )

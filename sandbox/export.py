@@ -54,14 +54,17 @@ def to_dataframe(
         ``household`` -- its type: tenant, pv_only, pv_battery, large_flex.
         ``distance_rank`` -- 0 nearest the transformer, 17 furthest.
         ``has_inverter`` -- False for the six tenants.
-        ``meter_kw`` -- net power, positive when injecting.
+        ``p_grid_kw`` -- net power exchanged with the grid (inverter output
+        minus household load), positive when injecting. The billed quantity.
         ``settlement_chf`` -- what it earned (positive) or paid (negative).
         ``voltage_pu`` -- voltage at its own bus.
-        ``p_set_kw`` / ``pv_available_kw`` / ``pv_realized_kw`` -- agents only,
-        NaN at a tenant's row, since a household with no inverter sets nothing.
+        ``p_inv_set_kw`` / ``pv_available_kw`` / ``pv_realized_kw`` -- agents
+        only, NaN at a tenant's row, since a household with no inverter sets
+        nothing. ``p_inv_set_kw`` is the inverter setpoint the controller
+        asked for, not the grid flow.
         ``run`` -- the `label`, so several runs concatenate cleanly.
     """
-    n_steps, num_pq = np.asarray(trajectory.meter_kwh).shape
+    n_steps, num_pq = np.asarray(trajectory.e_grid_kwh).shape
     interval = np.repeat(np.arange(n_steps), num_pq)
     connection = np.tile(np.arange(num_pq), n_steps)
     day_step = np.repeat(np.asarray(trajectory.day_step), num_pq)
@@ -90,10 +93,10 @@ def to_dataframe(
             "household": [population.type_of_pq[pq] for pq in connection],
             "distance_rank": [population.distance_rank[pq] for pq in connection],
             "has_inverter": np.tile(has_inverter, n_steps),
-            "meter_kw": (np.asarray(trajectory.meter_kwh) / step_duration_h()).reshape(-1),
+            "p_grid_kw": (np.asarray(trajectory.e_grid_kwh) / step_duration_h()).reshape(-1),
             "settlement_chf": np.asarray(trajectory.settlement_chf).reshape(-1),
             "voltage_pu": voltage[:, bus_of_pq].reshape(-1),
-            "p_set_kw": per_agent(trajectory.p_set_kw),
+            "p_inv_set_kw": per_agent(trajectory.p_inv_set_kw),
             "pv_available_kw": per_agent(trajectory.pv_available_kw),
             "pv_realized_kw": per_agent(trajectory.pv_realized_kw),
         }

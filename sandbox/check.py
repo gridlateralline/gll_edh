@@ -39,6 +39,11 @@ def my_controller_as_bundle() -> Controller:
 
     ``@numpy_controller`` already returns a :class:`Controller`, so the NumPy
     tier is passed straight through and ``check()`` works on it unchanged.
+
+    Define ``INIT_CARRY`` in ``my_idea`` -- a zero-argument callable returning
+    one household's starting carry -- to replace the default
+    :class:`~sandbox.controller.Memory` with your own pytree. Without it the
+    default is used, which is the right answer for most submissions.
     """
     from sandbox import my_idea
 
@@ -49,7 +54,7 @@ def my_controller_as_bundle() -> Controller:
         name="yours",
         fn=my_idea.my_controller,
         params={k: jnp.float32(v) for k, v in my_idea.CONTROLLER_PARAMS.items()},
-        init_carry=init_memory,
+        init_carry=getattr(my_idea, "INIT_CARRY", init_memory),
     )
 
 
@@ -80,7 +85,11 @@ def run_check(
 
     ``fast=False`` runs the eager path: a Python loop instead of ``scan``, so
     values are concrete, ``print`` works and a traceback points at your own
-    line. Slower, and the first thing to reach for when something breaks.
+    line. Much slower, and the first thing to reach for when something breaks.
+
+    No tuning happens here -- both controllers run at their current
+    parameters. That is what makes this fast, and it is why a *tariff* cannot
+    show its effect in a ``check()``: nothing in an episode reacts to a price.
     """
     population = reference_scenario()
     steps = days * STEPS_PER_DAY
@@ -97,7 +106,11 @@ def run_check(
 
     print(compare(rows, detail=detail))
     _verdict(rows["reference"], rows["yours"])
-    print("\n  one weather, {} day(s) -- rough. `score()` runs the real thing.".format(days))
+    print(
+        f"\n  one weather, {days} day(s), no tuning -- rough. `score()` runs the real thing."
+        "\n  A tariff cannot show its effect here: nothing in an episode reacts to a"
+        "\n  price, so only `score()`, which re-tunes households first, can price it."
+    )
 
 
 def run_score(detail: bool = True, seeds: int = 20) -> None:
@@ -105,8 +118,21 @@ def run_score(detail: bool = True, seeds: int = 20) -> None:
     from sandbox import my_idea
 
     population = reference_scenario()
+    controller = my_controller_as_bundle()
+
+    # A name in TUNE_OVER that the controller does not actually read would be
+    # swept, change nothing, and quietly leave the submission scored at
+    # whatever the tuner happened to return first. Say so instead.
+    unknown = [name for name in my_idea.TUNE_OVER if name not in (controller.params or {})]
+    if unknown:
+        print(
+            f"  WARNING: TUNE_OVER names {unknown}, which your controller's "
+            "parameters do not\n  contain. Those entries are ignored. Check "
+            "CONTROLLER_PARAMS in my_idea.py.\n"
+        )
+
     submission = Submission(
-        controller=my_controller_as_bundle(),
+        controller=controller,
         tariff=my_tariff_factory(),
         candidates=my_idea.TUNE_OVER,
     )
@@ -115,22 +141,39 @@ def run_score(detail: bool = True, seeds: int = 20) -> None:
     _verdict(evaluation.cells["fair_leg/base"], evaluation.cells["submitted/submitted"])
 
 
+#: Rows of the plain-words verdict: label, Score field, unit, and the sign of
+#: "better".
+_VERDICT_ROWS = (
+    ("solar exported at the worst moment", "transformer_export_peak_kw", "kW", -1),
+    ("worst sudden swing (herding)", "max_ramp_kw", "kW", -1),
+    ("everyone acting at once", "coincidence_factor", "", -1),
+    ("solar thrown away", "curtailed_share", "%", -1),
+    ("what the households earned", "community_settlement_chf", "CHF", +1),
+)
+
+
 def _verdict(reference, yours) -> None:
-    """Four numbers, in plain words, with the direction that counts as better."""
+    """Five numbers, in plain words, with the direction that counts as better."""
     print()
-    lines = [
-        ("solar exported at the worst moment", "transformer_export_peak_kw", "kW", -1),
-        ("worst sudden swing (herding)", "max_ramp_kw", "kW", -1),
-        ("everyone acting at once", "coincidence_factor", "", -1),
-        ("solar thrown away", "curtailed_share", "%", -1),
-        ("what the households earned", "community_settlement_chf", "CHF", +1),
-    ]
-    for label, field, unit, better in lines:
+    unchanged = 0
+    for label, field, unit, better in _VERDICT_ROWS:
         was, now = getattr(reference, field), getattr(yours, field)
         if unit == "%":
             was, now = was * 100, now * 100
         change = now - was
         # Relative, because "unchanged" arrives as a float difference of 1e-6.
         negligible = abs(change) <= 0.005 * max(abs(was), 1e-9)
+        unchanged += negligible
         mark = "  same" if negligible else (" better" if change * better > 0 else " worse")
         print(f"  {label:<36} {was:8.2f} -> {now:8.2f} {unit:<4}{mark}")
+
+    if unchanged == len(_VERDICT_ROWS):
+        # The shipped defaults reproduce the reference exactly, so a first run
+        # prints five identical rows. Saying so is the difference between
+        # "the harness works" and "something is broken".
+        print(
+            "\n  Every row identical. Expected on a fresh checkout: the default\n"
+            "  `my_controller` IS the reference controller, and the default\n"
+            "  `my_tariff` only redistributes, so the community total is unmoved.\n"
+            "  Edit sandbox/my_idea.py and run this again."
+        )
